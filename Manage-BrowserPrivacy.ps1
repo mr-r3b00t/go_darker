@@ -205,9 +205,9 @@ function Get-Controls {
     [void]$c.Add( (New-PolicyControl -Name 'Spotlight Recommendations' -Browser Edge -PolicyPath $edge `
         -ValueName 'SpotlightExperiencesAndRecommendationsEnabled' -OnValue 1 -OffValue 0) )
 
-    [void]$c.Add( (New-PolicyControl -Name 'Do Not Track OFF' -Browser Edge -PolicyPath $edge `
+    [void]$c.Add( (New-PolicyControl -Name 'DNT Header Not Sent' -Browser Edge -PolicyPath $edge `
         -ValueName 'ConfigureDoNotTrack' -OnValue 0 -OffValue 1 `
-        -Note 'Disabled = DNT header IS sent (hardened)') )
+        -Note 'Disabled = Do Not Track header IS sent (hardened)') )
 
     [void]$c.Add( (New-PolicyControl -Name 'Nav Error Web Service' -Browser Edge -PolicyPath $edge `
         -ValueName 'ResolveNavigationErrorsUseWebService' -OnValue 1 -OffValue 0) )
@@ -370,27 +370,32 @@ function Show-Status {
     Write-Host ('{0,-4}{1,-36}{2,-10}{3}' -f '---', '-------', '-------', '-----') -ForegroundColor DarkGray
 
     $i = 0
-    $nEnabled = 0; $nDisabled = 0; $nSecOff = 0
+    $nEnabled = 0; $nDisabled = 0; $nSecOff = 0; $nNotInstalled = 0
     foreach ($ctrl in $Controls) {
         $i++
-        $state = Get-ControlState -Ctrl $ctrl
-        if     ($state -like 'Enabled*')  { $nEnabled++ }
-        elseif ($state -like 'Disabled*') { $nDisabled++ }
+        $state     = Get-ControlState -Ctrl $ctrl
+        $installed = $Script:Browsers[$ctrl.Category].Installed
+        if ($installed) {
+            if     ($state -like 'Enabled*')  { $nEnabled++ }
+            elseif ($state -like 'Disabled*') { $nDisabled++ }
+        } else { $nNotInstalled++ }
         $sec = ''
         if ($ctrl.Security) {
             $sec = ' [SEC]'
-            if ($state -like 'Disabled*') { $nSecOff++ }
+            if ($installed -and $state -like 'Disabled*') { $nSecOff++ }
         }
         $lock = ''
         if ($ctrl.AdminReq -and -not $Script:IsAdmin) { $lock = ' *' }
         $flag = ''
-        if (-not $Script:Browsers[$ctrl.Category].Installed) { $flag = ' (not installed)' }
+        if (-not $installed) { $flag = ' (not installed)' }
         $line = ('{0,-4}{1,-36}{2,-10}' -f $i, ($ctrl.Name + $sec), $ctrl.Category)
         Write-Host $line -NoNewline
         Write-Host ($state + $lock + $flag) -ForegroundColor (Get-StateColor $state)
     }
     Write-Host ('{0,-4}{1,-36}{2,-10}{3}' -f '---', '-------', '-------', '-----') -ForegroundColor DarkGray
-    Write-Host ('  Summary: {0} enabled, {1} disabled' -f $nEnabled, $nDisabled) -ForegroundColor White
+    $summary = ('  Summary: {0} enabled, {1} disabled' -f $nEnabled, $nDisabled)
+    if ($nNotInstalled -gt 0) { $summary += (' ({0} not counted: browser not installed)' -f $nNotInstalled) }
+    Write-Host $summary -ForegroundColor White
     Write-Host '  [SEC] = anti-malware URL/site check. Disabling REDUCES protection' -ForegroundColor DarkYellow
     if ($nSecOff -gt 0) {
         Write-Host ('  WARNING: {0} security URL-check feature(s) are currently OFF' -f $nSecOff) -ForegroundColor Red
@@ -479,7 +484,8 @@ function Start-Menu {
         Write-Host '  D            disable ALL (harden; keeps [SEC] URL checks ON)'
         Write-Host '  E            enable ALL (restore browser defaults)'
         Write-Host '  S            disable ALL [SEC] URL-check features (reduces security)'
-        Write-Host '  b <name>     apply D to one browser (e.g. b Edge)'
+        Write-Host '  b <name>     harden one browser  (e.g. b Edge)'
+        Write-Host '  B <name>     restore one browser (e.g. B Edge)'
         Write-Host '  r            refresh view'
         Write-Host '  c <path>     export status to CSV'
         Write-Host '  q            quit'
@@ -506,6 +512,10 @@ function Start-Menu {
             }
             '^S$'         {
                 $secList = @($Controls | Where-Object { $_.Security })
+                if ($secList.Count -eq 0) {
+                    Write-Host 'No [SEC] controls for the detected browsers.' -ForegroundColor DarkYellow
+                    Read-Host 'Press Enter'; continue
+                }
                 Write-Host ''
                 Write-Host 'WARNING: This turns OFF anti-malware URL/site reputation checks' -ForegroundColor Red
                 Write-Host ('(SmartScreen / Safe Browsing) for {0} item(s). Your browser will' -f $secList.Count) -ForegroundColor Red
@@ -515,7 +525,17 @@ function Start-Menu {
                 }
                 Read-Host 'Press Enter'; continue
             }
-            '^[Bb]\s+(\w+)$' {
+            '^B\s+(\w+)$' {
+                $target = $Matches[1]
+                $subset = @($Controls | Where-Object { $_.Category -eq $target })
+                if ($subset.Count -eq 0) {
+                    Write-Host ('No controls for browser "{0}" (use Edge/Chrome/Firefox/Brave)' -f $target) -ForegroundColor Red
+                } elseif ((Read-Host ('Restore all {0} defaults? type YES' -f $target)) -ceq 'YES') {
+                    Invoke-AllAction -Controls $subset -Action Enable
+                }
+                Read-Host 'Press Enter'; continue
+            }
+            '^b\s+(\w+)$' {
                 $target = $Matches[1]
                 $subset = @($Controls | Where-Object { $_.Category -eq $target })
                 if ($subset.Count -eq 0) {
@@ -551,7 +571,7 @@ function Start-Menu {
                 } else { Write-Host 'Out of range' -ForegroundColor Red }
                 Read-Host 'Press Enter'; continue
             }
-            default { Write-Host 'Unknown command (d/e need an item number; D/E alone mean ALL)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
+            default { Write-Host 'Unknown command (d/e need an item number; D/E/S alone act on ALL; b/B <browser>)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
         }
     }
 }
@@ -560,6 +580,10 @@ function Start-Menu {
 # Main
 # ---------------------------------------------------------------------------
 $controls = Get-Controls
+
+if ($IncludeSecurity -and -not $DisableAll) {
+    Write-Host 'NOTE: -IncludeSecurity only has an effect together with -DisableAll; ignoring it.' -ForegroundColor DarkYellow
+}
 
 if (@($controls).Count -eq 0) {
     Write-Host 'No supported browsers detected (Edge/Chrome/Firefox/Brave).' -ForegroundColor Red

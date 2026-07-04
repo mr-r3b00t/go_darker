@@ -14,7 +14,9 @@
               appraiser, Cloud Content / Tailored Experiences, Activity
               History, Advertising ID, Feedback (SIUF), inking/typing and
               speech data, search suggestions, DiagTrack + related services,
-              and telemetry scheduled tasks.
+              telemetry scheduled tasks, and Windows SmartScreen ([SEC]:
+              apps-and-files check, Store app URL check, Enhanced Phishing
+              Protection - excluded from bulk disable unless requested).
 
     Notes   : - Windows PowerShell 5.1 compatible. ASCII-only source.
               - Registry (HKLM) and service changes require Administrator.
@@ -27,7 +29,8 @@
     Usage   :
         .\Manage-WindowsTelemetry.ps1                 # interactive menu
         .\Manage-WindowsTelemetry.ps1 -Report         # print status and exit
-        .\Manage-WindowsTelemetry.ps1 -DisableAll     # turn telemetry OFF
+        .\Manage-WindowsTelemetry.ps1 -DisableAll     # turn telemetry OFF (keeps [SEC] ON)
+        .\Manage-WindowsTelemetry.ps1 -DisableAll -IncludeSecurity  # also disable SmartScreen
         .\Manage-WindowsTelemetry.ps1 -EnableAll      # restore Windows default ON
         .\Manage-WindowsTelemetry.ps1 -Csv .\out.csv  # export status and exit
         .\Manage-WindowsTelemetry.ps1 -Report -Csv .\status.csv
@@ -41,6 +44,7 @@ param(
     [switch]$Report,
     [switch]$DisableAll,
     [switch]$EnableAll,
+    [switch]$IncludeSecurity,   # also disable [SEC] SmartScreen features in bulk actions
     [string]$Csv
 )
 
@@ -107,7 +111,8 @@ function New-RegControl {
         [string]$ValueName, [int]$OnValue, [int]$OffValue,
         [ValidateSet('On','Off')][string]$Default = 'On',
         [string]$RegType = 'DWord', [string]$Note = '',
-        [switch]$RemoveOnEnable
+        [switch]$RemoveOnEnable,
+        [switch]$Security   # marks a control whose "Disabled" state REDUCES protection
     )
     [pscustomobject]@{
         Type           = 'Reg'
@@ -121,6 +126,7 @@ function New-RegControl {
         Default        = $Default
         RegType        = $RegType
         RemoveOnEnable = [bool]$RemoveOnEnable
+        Security       = [bool]$Security
         AdminReq       = ($Hive -eq 'HKLM')
     }
 }
@@ -138,6 +144,7 @@ function New-ServiceControl {
         Note               = $Note
         ServiceName        = $ServiceName
         DefaultStartupType = $DefaultStartupType
+        Security           = $false
         AdminReq           = $true
     }
 }
@@ -151,6 +158,7 @@ function New-TaskControl {
         Category = 'Scheduled Task'
         Note     = $Note
         Tasks    = $Tasks
+        Security = $false
         AdminReq = $true
     }
 }
@@ -374,6 +382,24 @@ function Get-Controls {
         -ValueName 'BingSearchEnabled' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
         -Note 'Win10-era value; largely ignored on Win11') )
 
+    # --- Windows SmartScreen: OS-level URL/file reputation (SECURITY) ---
+    # These check apps, files and URLs against Microsoft's cloud reputation
+    # service. Disabling them REDUCES protection against malware/phishing.
+    [void]$c.Add( (New-RegControl -Name 'SmartScreen (apps and files)' -Category 'SmartScreen' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\System' `
+        -ValueName 'EnableSmartScreen' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable -Security `
+        -Note 'SECURITY: shell check of downloaded apps/files') )
+
+    [void]$c.Add( (New-RegControl -Name 'SmartScreen (Store apps)' -Category 'SmartScreen' `
+        -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\AppHost' `
+        -ValueName 'EnableWebContentEvaluation' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable -Security `
+        -Note 'SECURITY: URL check for web content in Store apps') )
+
+    [void]$c.Add( (New-RegControl -Name 'Enhanced Phishing Protection' -Category 'SmartScreen' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\WTDS\Components' `
+        -ValueName 'ServiceEnabled' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable -Security `
+        -Note 'SECURITY: Win11 password/phishing protection service') )
+
     # --- Services ---
     [void]$c.Add( (New-ServiceControl -Name 'Connected User Experiences' `
         -ServiceName 'DiagTrack' -DefaultStartupType Automatic `
@@ -436,25 +462,34 @@ function Show-Status {
     Write-Host ('  Host: {0}   Admin: {1}   {2}' -f $env:COMPUTERNAME, $Script:IsAdmin, (Get-Date)) -ForegroundColor DarkCyan
     Write-Host '  Enabled = collecting/on    Disabled = hardened/off' -ForegroundColor DarkCyan
     Write-Host '==================================================================' -ForegroundColor Cyan
-    Write-Host ('{0,-4}{1,-34}{2,-18}{3}' -f '#', 'Setting', 'Category', 'State') -ForegroundColor White
-    Write-Host ('{0,-4}{1,-34}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
+    Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '#', 'Setting', 'Category', 'State') -ForegroundColor White
+    Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
 
     $i = 0
-    $nEnabled = 0; $nDisabled = 0; $nAbsent = 0
+    $nEnabled = 0; $nDisabled = 0; $nAbsent = 0; $nSecOff = 0
     foreach ($ctrl in $Controls) {
         $i++
         $state = Get-ControlState -Ctrl $ctrl
         if     ($state -like 'Enabled*')     { $nEnabled++ }
         elseif ($state -like 'Disabled*')    { $nDisabled++ }
         elseif ($state -like 'Not present*') { $nAbsent++ }
+        $sec = ''
+        if ($ctrl.Security) {
+            $sec = ' [SEC]'
+            if ($state -like 'Disabled*') { $nSecOff++ }
+        }
         $lock  = ''
         if ($ctrl.AdminReq -and -not $Script:IsAdmin) { $lock = ' *' }
-        $line = ('{0,-4}{1,-34}{2,-18}' -f $i, $ctrl.Name, $ctrl.Category)
+        $line = ('{0,-4}{1,-36}{2,-18}' -f $i, ($ctrl.Name + $sec), $ctrl.Category)
         Write-Host $line -NoNewline
         Write-Host ($state + $lock) -ForegroundColor (Get-StateColor $state)
     }
-    Write-Host ('{0,-4}{1,-34}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
+    Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
     Write-Host ('  Summary: {0} enabled, {1} disabled, {2} not present' -f $nEnabled, $nDisabled, $nAbsent) -ForegroundColor White
+    Write-Host '  [SEC] = anti-malware reputation check. Disabling REDUCES protection' -ForegroundColor DarkYellow
+    if ($nSecOff -gt 0) {
+        Write-Host ('  WARNING: {0} security SmartScreen feature(s) are currently OFF' -f $nSecOff) -ForegroundColor Red
+    }
     if (-not $Script:IsAdmin) {
         Write-Host '  * requires Administrator to change (run elevated)' -ForegroundColor DarkYellow
     }
@@ -502,11 +537,26 @@ function Invoke-ControlAction {
 }
 
 function Invoke-AllAction {
-    param($Controls, [ValidateSet('Enable','Disable')][string]$Action)
+    param(
+        $Controls,
+        [ValidateSet('Enable','Disable')][string]$Action,
+        [switch]$WithSecurity   # when disabling, also include [SEC] SmartScreen features
+    )
     $verb = if ($Action -eq 'Enable') { 'ENABLE (restore Windows default)' } else { 'DISABLE (harden)' }
     Write-Host ''
     Write-Host ("Applying {0} to ALL items..." -f $verb) -ForegroundColor Cyan
-    foreach ($ctrl in $Controls) { Invoke-ControlAction -Ctrl $ctrl -Action $Action }
+    $skippedSec = 0
+    foreach ($ctrl in $Controls) {
+        # Never auto-disable SmartScreen reputation checks in bulk unless explicitly requested.
+        if ($Action -eq 'Disable' -and $ctrl.Security -and -not $WithSecurity) {
+            $skippedSec++
+            continue
+        }
+        Invoke-ControlAction -Ctrl $ctrl -Action $Action
+    }
+    if ($skippedSec -gt 0) {
+        Write-Host ('  Kept {0} [SEC] SmartScreen feature(s) ON (use -IncludeSecurity / menu "S" to disable).' -f $skippedSec) -ForegroundColor DarkYellow
+    }
     Write-Host ''
 }
 
@@ -521,8 +571,9 @@ function Start-Menu {
         Write-Host '  <n>          toggle item n (Enable<->Disable)'
         Write-Host '  e <n>        enable item n'
         Write-Host '  d <n>        disable item n'
-        Write-Host '  D            disable ALL (harden)'
+        Write-Host '  D            disable ALL (harden; keeps [SEC] SmartScreen ON)'
         Write-Host '  E            enable ALL (restore Windows default)'
+        Write-Host '  S            disable ALL [SEC] SmartScreen features (reduces security)'
         Write-Host '  r            refresh view'
         Write-Host '  c <path>     export status to CSV'
         Write-Host '  q            quit'
@@ -544,6 +595,21 @@ function Start-Menu {
             '^E$'         {
                 if ((Read-Host 'Enable ALL (Windows default)? type YES') -ceq 'YES') {
                     Invoke-AllAction -Controls $Controls -Action Enable
+                }
+                Read-Host 'Press Enter'; continue
+            }
+            '^S$'         {
+                $secList = @($Controls | Where-Object { $_.Security })
+                if ($secList.Count -eq 0) {
+                    Write-Host 'No [SEC] controls in the catalog.' -ForegroundColor DarkYellow
+                    Read-Host 'Press Enter'; continue
+                }
+                Write-Host ''
+                Write-Host 'WARNING: This turns OFF Windows SmartScreen reputation checks' -ForegroundColor Red
+                Write-Host ('for {0} item(s). Windows will no longer warn about known' -f $secList.Count) -ForegroundColor Red
+                Write-Host 'malicious apps, files and phishing pages.' -ForegroundColor Red
+                if ((Read-Host 'Proceed? type DISABLE-SECURITY') -ceq 'DISABLE-SECURITY') {
+                    Invoke-AllAction -Controls $secList -Action Disable -WithSecurity
                 }
                 Read-Host 'Press Enter'; continue
             }
@@ -573,7 +639,7 @@ function Start-Menu {
                 } else { Write-Host 'Out of range' -ForegroundColor Red }
                 Read-Host 'Press Enter'; continue
             }
-            default { Write-Host 'Unknown command (d/e need an item number; D/E alone mean ALL)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
+            default { Write-Host 'Unknown command (d/e need an item number; D/E/S alone act on ALL)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
         }
     }
 }
@@ -583,8 +649,12 @@ function Start-Menu {
 # ---------------------------------------------------------------------------
 $controls = Get-Controls
 
+if ($IncludeSecurity -and -not $DisableAll) {
+    Write-Host 'NOTE: -IncludeSecurity only has an effect together with -DisableAll; ignoring it.' -ForegroundColor DarkYellow
+}
+
 if ($DisableAll) {
-    Invoke-AllAction -Controls $controls -Action Disable
+    Invoke-AllAction -Controls $controls -Action Disable -WithSecurity:$IncludeSecurity
     Show-Status -Controls $controls
     if ($Csv) { Export-StatusCsv -Controls $controls -Path $Csv }
     return

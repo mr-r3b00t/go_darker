@@ -33,8 +33,11 @@ services and scheduled tasks** from one place.
 # Interactive menu (run from an ELEVATED PowerShell to change HKLM/services/tasks)
 .\Manage-WindowsTelemetry.ps1
 
-# One-shot hardening: turn all telemetry OFF
+# One-shot hardening: turn all telemetry OFF (keeps [SEC] SmartScreen ON)
 .\Manage-WindowsTelemetry.ps1 -DisableAll
+
+# ... also disable the SmartScreen reputation checks (see [SEC] note below)
+.\Manage-WindowsTelemetry.ps1 -DisableAll -IncludeSecurity
 
 # Restore Windows default behaviour: turn everything back ON
 .\Manage-WindowsTelemetry.ps1 -EnableAll
@@ -79,13 +82,25 @@ Two design rules worth knowing:
 |---|---|
 | `<n>` | Toggle item *n* (Enabled <-> Disabled) |
 | `e <n>` / `d <n>` | Enable / disable item *n* |
-| `E` / `D` (uppercase) | Enable / disable **ALL** items (asks for `YES` confirmation) |
+| `E` / `D` (uppercase) | Enable / disable **ALL** items (asks for `YES` confirmation; `D` keeps `[SEC]` items ON) |
+| `S` | Disable the `[SEC]` SmartScreen features (requires typing `DISABLE-SECURITY`) |
 | `r` | Refresh the view |
 | `c <path>` | Export status to CSV |
 | `q` | Quit |
 
 The menu is case-sensitive where it matters: a bare lowercase `d`/`e` will
 **not** trigger the ALL branches.
+
+### `[SEC]` items: Windows SmartScreen
+
+Three controls check apps, files and URLs against Microsoft's cloud
+reputation service: **SmartScreen for apps and files** (shell), **SmartScreen
+for Store apps**, and **Enhanced Phishing Protection**. They are marked
+`[SEC]` because disabling them *reduces protection* against malware and
+phishing. The same guard rails as the browser tool apply: `-DisableAll` and
+menu `D` leave them ON; disabling requires `-IncludeSecurity`, the menu `S`
+command, or an individual item toggle. A red WARNING line appears in the
+status view whenever any `[SEC]` item is OFF.
 
 ## What is covered
 
@@ -100,6 +115,7 @@ The menu is case-sensitive where it matters: a bare lowercase `d`/`e` will
 | Cloud content | Consumer Features, Tailored Experiences (policy) |
 | Activity history | Publish / Upload User Activities |
 | Per-user privacy (no admin needed) | Advertising ID, Tailored Experiences, Feedback frequency (SIUF), implicit ink/text collection, Typing Insights (TIPC), online speech recognition, linguistic data collection, Search box web suggestions (Win11) + legacy `BingSearchEnabled` |
+| SmartScreen `[SEC]` | Apps-and-files check (`EnableSmartScreen` policy), Store apps URL check (`EnableWebContentEvaluation`), Enhanced Phishing Protection (`WTDS ServiceEnabled`) |
 
 ### Services
 
@@ -167,8 +183,9 @@ registration); only installed ones are shown unless you pass `-IncludeAll`.
 ```
 
 The menu supports the same commands as the Windows tool, plus
-`b <browser>` to harden a single browser at once (e.g. `b Edge`), and
-`S` to disable the malicious-URL checks (see below).
+`b <browser>` to harden a single browser, `B <browser>` to restore a single
+browser's defaults (e.g. `b Edge` / `B Edge`), and `S` to disable the
+malicious-URL checks (see below).
 
 ## Safe Browsing / SmartScreen (URL reputation) - read this
 
