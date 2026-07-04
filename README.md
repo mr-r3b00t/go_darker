@@ -161,10 +161,44 @@ registration); only installed ones are shown unless you pass `-IncludeAll`.
 # Export status to CSV / include browsers that are not installed
 .\Manage-BrowserPrivacy.ps1 -Csv .\browser-status.csv
 .\Manage-BrowserPrivacy.ps1 -Report -IncludeAll
+
+# Harden everything AND turn off the malicious-URL checks (see warning below)
+.\Manage-BrowserPrivacy.ps1 -DisableAll -IncludeSecurity
 ```
 
 The menu supports the same commands as the Windows tool, plus
-`b <browser>` to harden a single browser at once (e.g. `b Edge`).
+`b <browser>` to harden a single browser at once (e.g. `b Edge`), and
+`S` to disable the malicious-URL checks (see below).
+
+## Safe Browsing / SmartScreen (URL reputation) - read this
+
+Some controls check the **domain / IP / URL** you visit against a cloud
+reputation service (Microsoft SmartScreen for Edge, Google Safe Browsing for
+Chrome/Brave). These are **security** features - they warn you off phishing
+and malware sites - but they work by sending URL/host data off the machine,
+so they are also a privacy consideration. They are marked **`[SEC]`** in the
+status view.
+
+Because turning them off *reduces protection*, they are handled separately:
+
+- **`-DisableAll` and the menu `D` command leave `[SEC]` items ON.** Bulk
+  hardening will not silently disable your malware protection.
+- To disable them you must be explicit:
+  - CLI: `-DisableAll -IncludeSecurity`
+  - Menu: the dedicated **`S`** command (requires typing
+    `DISABLE-SECURITY` to confirm)
+  - Or toggle the individual numbered item (that is always a deliberate act)
+- The status view prints a red **WARNING** line whenever any `[SEC]` feature
+  is currently OFF, so a hardened-too-far machine is obvious at a glance.
+
+`[SEC]` controls covered: Edge SmartScreen (site/URL check, PUA blocking, DNS
+reputation lookups, typosquatting checker); Chrome & Brave Safe Browsing
+protection level (`0` = off, disables URL reputation checks entirely).
+
+> Recommendation: leave these ON unless you have a specific reason (e.g. you
+> route all traffic through a separate filtering DNS/proxy that already does
+> this). They are the browser's main defence against phishing and drive-by
+> malware.
 
 ## How it works
 
@@ -191,11 +225,13 @@ Two things to expect:
 | **Chrome** | Metrics reporting (UMA), search suggestions, Safe Browsing extended reporting, URL-keyed data collection, cloud spell check, alternate error pages, network prediction, feedback surveys, Privacy Sandbox (prompt, Ad Topics, site-suggested ads, ad measurement) |
 | **Firefox** | Telemetry, Firefox Studies (Shield), Default Browser Agent (daily Mozilla ping), Pocket |
 | **Brave** | Rewards, Wallet, VPN, Tor windows, search suggestions (Chromium policy) |
+| **`[SEC]` URL checks** | Edge SmartScreen (site/URL, PUA, DNS lookups, typosquatting); Chrome & Brave Safe Browsing protection level |
 
 Notes:
 
-- Chrome's Safe Browsing itself is left ON; only the *extended reporting*
-  (extra data to Google) is hardened.
+- Under `-DisableAll`, Safe Browsing / SmartScreen stay ON; only the
+  *extended reporting* (extra data to Google) is hardened by default. Full
+  URL-check disabling requires `-IncludeSecurity` or the menu `S` command.
 - The three Chrome Privacy Sandbox ad policies require the Privacy Sandbox
   prompt policy to be Disabled as well - the tool includes it.
 - Brave sends comparatively little telemetry by default; its entries harden
@@ -206,7 +242,8 @@ Notes:
 
 ## CSV output columns
 
-`Name, Browser, Installed, Policy, State, Note`
+`Name, Browser, Installed, Policy, State, Note` ([SEC] items are named as
+such in the `Name` column).
 
 ---
 

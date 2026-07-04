@@ -39,6 +39,7 @@ param(
     [switch]$DisableAll,
     [switch]$EnableAll,
     [switch]$IncludeAll,
+    [switch]$IncludeSecurity,   # also disable [SEC] URL-check features in bulk actions
     [string]$Csv
 )
 
@@ -122,7 +123,8 @@ function New-PolicyControl {
     param(
         [string]$Name, [string]$Browser, [string]$PolicyPath,
         [string]$ValueName, [int]$OnValue, [int]$OffValue,
-        [string]$Note = ''
+        [string]$Note = '',
+        [switch]$Security   # marks a control whose "Disabled" state REDUCES protection
     )
     [pscustomobject]@{
         Type      = 'Reg'
@@ -133,6 +135,7 @@ function New-PolicyControl {
         ValueName = $ValueName
         OnValue   = $OnValue
         OffValue  = $OffValue
+        Security  = [bool]$Security
         AdminReq  = $true
     }
 }
@@ -216,6 +219,23 @@ function Get-Controls {
         -ValueName 'NetworkPredictionOptions' -OnValue 0 -OffValue 2 `
         -Note '0=predict always 2=never') )
 
+    # --- Edge SmartScreen: URL / site / download reputation (SECURITY) ---
+    [void]$c.Add( (New-PolicyControl -Name 'SmartScreen (URL/site check)' -Browser Edge -PolicyPath $edge `
+        -ValueName 'SmartScreenEnabled' -OnValue 1 -OffValue 0 -Security `
+        -Note 'SECURITY: checks visited URLs/downloads against Microsoft reputation') )
+
+    [void]$c.Add( (New-PolicyControl -Name 'SmartScreen PUA blocking' -Browser Edge -PolicyPath $edge `
+        -ValueName 'SmartScreenPuaEnabled' -OnValue 1 -OffValue 0 -Security `
+        -Note 'SECURITY: blocks potentially unwanted apps') )
+
+    [void]$c.Add( (New-PolicyControl -Name 'SmartScreen DNS lookups' -Browser Edge -PolicyPath $edge `
+        -ValueName 'SmartScreenDnsRequestsEnabled' -OnValue 1 -OffValue 0 -Security `
+        -Note 'SECURITY: DNS-based site reputation lookups') )
+
+    [void]$c.Add( (New-PolicyControl -Name 'Typosquatting Checker' -Browser Edge -PolicyPath $edge `
+        -ValueName 'TyposquattingCheckerEnabled' -OnValue 1 -OffValue 0 -Security `
+        -Note 'SECURITY: warns on lookalike/typo domains') )
+
     # =========================== Google Chrome ============================
     [void]$c.Add( (New-PolicyControl -Name 'Metrics Reporting (UMA)' -Browser Chrome -PolicyPath $chr `
         -ValueName 'MetricsReportingEnabled' -OnValue 1 -OffValue 0 `
@@ -228,6 +248,10 @@ function Get-Controls {
     [void]$c.Add( (New-PolicyControl -Name 'Safe Browsing Ext. Reporting' -Browser Chrome -PolicyPath $chr `
         -ValueName 'SafeBrowsingExtendedReportingEnabled' -OnValue 1 -OffValue 0 `
         -Note 'Extra page/system data to Google; SB itself stays on') )
+
+    [void]$c.Add( (New-PolicyControl -Name 'Safe Browsing (URL check)' -Browser Chrome -PolicyPath $chr `
+        -ValueName 'SafeBrowsingProtectionLevel' -OnValue 1 -OffValue 0 -Security `
+        -Note 'SECURITY: 0=off 1=standard 2=enhanced. Off stops URL reputation checks') )
 
     [void]$c.Add( (New-PolicyControl -Name 'URL-keyed Data Collection' -Browser Chrome -PolicyPath $chr `
         -ValueName 'UrlKeyedAnonymizedDataCollectionEnabled' -OnValue 1 -OffValue 0 `
@@ -300,6 +324,10 @@ function Get-Controls {
         -ValueName 'SearchSuggestEnabled' -OnValue 1 -OffValue 0 `
         -Note 'Chromium policy honoured by Brave') )
 
+    [void]$c.Add( (New-PolicyControl -Name 'Safe Browsing (URL check)' -Browser Brave -PolicyPath $brv `
+        -ValueName 'SafeBrowsingProtectionLevel' -OnValue 1 -OffValue 0 -Security `
+        -Note 'SECURITY: 0=off 1=standard 2=enhanced. Off stops URL reputation checks') )
+
     # Filter to installed browsers unless -IncludeAll
     if ($IncludeAll) { return $c }
     $filtered = New-Object System.Collections.ArrayList
@@ -338,26 +366,35 @@ function Show-Status {
     Write-Host ('  Browsers: {0}' -f ($det -join ', ')) -ForegroundColor DarkCyan
     Write-Host '  Enabled = collecting/on    Disabled = hardened/off' -ForegroundColor DarkCyan
     Write-Host '==================================================================' -ForegroundColor Cyan
-    Write-Host ('{0,-4}{1,-32}{2,-10}{3}' -f '#', 'Setting', 'Browser', 'State') -ForegroundColor White
-    Write-Host ('{0,-4}{1,-32}{2,-10}{3}' -f '---', '-------', '-------', '-----') -ForegroundColor DarkGray
+    Write-Host ('{0,-4}{1,-36}{2,-10}{3}' -f '#', 'Setting', 'Browser', 'State') -ForegroundColor White
+    Write-Host ('{0,-4}{1,-36}{2,-10}{3}' -f '---', '-------', '-------', '-----') -ForegroundColor DarkGray
 
     $i = 0
-    $nEnabled = 0; $nDisabled = 0
+    $nEnabled = 0; $nDisabled = 0; $nSecOff = 0
     foreach ($ctrl in $Controls) {
         $i++
         $state = Get-ControlState -Ctrl $ctrl
         if     ($state -like 'Enabled*')  { $nEnabled++ }
         elseif ($state -like 'Disabled*') { $nDisabled++ }
+        $sec = ''
+        if ($ctrl.Security) {
+            $sec = ' [SEC]'
+            if ($state -like 'Disabled*') { $nSecOff++ }
+        }
         $lock = ''
         if ($ctrl.AdminReq -and -not $Script:IsAdmin) { $lock = ' *' }
         $flag = ''
         if (-not $Script:Browsers[$ctrl.Category].Installed) { $flag = ' (not installed)' }
-        $line = ('{0,-4}{1,-32}{2,-10}' -f $i, $ctrl.Name, $ctrl.Category)
+        $line = ('{0,-4}{1,-36}{2,-10}' -f $i, ($ctrl.Name + $sec), $ctrl.Category)
         Write-Host $line -NoNewline
         Write-Host ($state + $lock + $flag) -ForegroundColor (Get-StateColor $state)
     }
-    Write-Host ('{0,-4}{1,-32}{2,-10}{3}' -f '---', '-------', '-------', '-----') -ForegroundColor DarkGray
+    Write-Host ('{0,-4}{1,-36}{2,-10}{3}' -f '---', '-------', '-------', '-----') -ForegroundColor DarkGray
     Write-Host ('  Summary: {0} enabled, {1} disabled' -f $nEnabled, $nDisabled) -ForegroundColor White
+    Write-Host '  [SEC] = anti-malware URL/site check. Disabling REDUCES protection' -ForegroundColor DarkYellow
+    if ($nSecOff -gt 0) {
+        Write-Host ('  WARNING: {0} security URL-check feature(s) are currently OFF' -f $nSecOff) -ForegroundColor Red
+    }
     Write-Host '  Policies apply on next browser start. While hardened, browsers' -ForegroundColor DarkCyan
     Write-Host '  show a "managed" notice on settings pages - that is expected.' -ForegroundColor DarkCyan
     if (-not $Script:IsAdmin) {
@@ -403,11 +440,26 @@ function Invoke-ControlAction {
 }
 
 function Invoke-AllAction {
-    param($Controls, [ValidateSet('Enable','Disable')][string]$Action)
+    param(
+        $Controls,
+        [ValidateSet('Enable','Disable')][string]$Action,
+        [switch]$WithSecurity   # when disabling, also include [SEC] URL-check features
+    )
     $verb = if ($Action -eq 'Enable') { 'ENABLE (restore browser defaults)' } else { 'DISABLE (harden)' }
     Write-Host ''
     Write-Host ("Applying {0} to ALL items..." -f $verb) -ForegroundColor Cyan
-    foreach ($ctrl in $Controls) { Invoke-ControlAction -Ctrl $ctrl -Action $Action }
+    $skippedSec = 0
+    foreach ($ctrl in $Controls) {
+        # Never auto-disable anti-malware URL checks in bulk unless explicitly requested.
+        if ($Action -eq 'Disable' -and $ctrl.Security -and -not $WithSecurity) {
+            $skippedSec++
+            continue
+        }
+        Invoke-ControlAction -Ctrl $ctrl -Action $Action
+    }
+    if ($skippedSec -gt 0) {
+        Write-Host ('  Kept {0} [SEC] URL-check feature(s) ON (use -IncludeSecurity / menu "S" to disable).' -f $skippedSec) -ForegroundColor DarkYellow
+    }
     Write-Host ''
     Write-Host 'Restart the affected browsers for policies to take effect.' -ForegroundColor Cyan
     Write-Host ''
@@ -424,8 +476,9 @@ function Start-Menu {
         Write-Host '  <n>          toggle item n (Enable<->Disable)'
         Write-Host '  e <n>        enable item n'
         Write-Host '  d <n>        disable item n'
-        Write-Host '  D            disable ALL (harden)'
+        Write-Host '  D            disable ALL (harden; keeps [SEC] URL checks ON)'
         Write-Host '  E            enable ALL (restore browser defaults)'
+        Write-Host '  S            disable ALL [SEC] URL-check features (reduces security)'
         Write-Host '  b <name>     apply D to one browser (e.g. b Edge)'
         Write-Host '  r            refresh view'
         Write-Host '  c <path>     export status to CSV'
@@ -448,6 +501,17 @@ function Start-Menu {
             '^E$'         {
                 if ((Read-Host 'Restore ALL browser defaults? type YES') -ceq 'YES') {
                     Invoke-AllAction -Controls $Controls -Action Enable
+                }
+                Read-Host 'Press Enter'; continue
+            }
+            '^S$'         {
+                $secList = @($Controls | Where-Object { $_.Security })
+                Write-Host ''
+                Write-Host 'WARNING: This turns OFF anti-malware URL/site reputation checks' -ForegroundColor Red
+                Write-Host ('(SmartScreen / Safe Browsing) for {0} item(s). Your browser will' -f $secList.Count) -ForegroundColor Red
+                Write-Host 'no longer warn about known malicious or phishing sites.' -ForegroundColor Red
+                if ((Read-Host 'Proceed? type DISABLE-SECURITY') -ceq 'DISABLE-SECURITY') {
+                    Invoke-AllAction -Controls $secList -Action Disable -WithSecurity
                 }
                 Read-Host 'Press Enter'; continue
             }
@@ -504,7 +568,7 @@ if (@($controls).Count -eq 0) {
 }
 
 if ($DisableAll) {
-    Invoke-AllAction -Controls $controls -Action Disable
+    Invoke-AllAction -Controls $controls -Action Disable -WithSecurity:$IncludeSecurity
     Show-Status -Controls $controls
     if ($Csv) { Export-StatusCsv -Controls $controls -Path $Csv }
     return
