@@ -6,11 +6,23 @@ Two single-file, dependency-free PowerShell 5.1 scripts:
 |---|---|
 | `Manage-WindowsTelemetry.ps1` | Windows 11 telemetry / diagnostic-data settings, services and scheduled tasks |
 | `Manage-BrowserPrivacy.ps1` | Privacy / telemetry policies for Edge, Chrome, Firefox and Brave |
+| `Manage-DefenderAntivirus.ps1` | Microsoft Defender Antivirus health, protection settings, scans and updates |
 
-Both share the same UX: a color-coded status view (**Enabled** = collecting,
-**Disabled** = hardened), interactive per-item toggling, one-shot
-`-DisableAll` / `-EnableAll`, `-Report`, and CSV export. Both are ASCII-only,
-BOM-free, module-free, and run in stock `powershell.exe` on Windows 11.
+All three share the same UX: a color-coded status view, interactive per-item
+toggling, `-Report`, and CSV export. They are ASCII-only, BOM-free, and run
+in stock `powershell.exe` on Windows 11.
+
+**Intended audience:** this is a privacy-enabling / telemetry-disabling
+toolkit for **advanced users and administrators** who understand the
+tradeoffs. It is **not** aimed at general users and it deliberately exposes
+switches that reduce data sharing *and* switches that reduce security
+protection. Know what each item does before you flip it.
+
+**Important difference in orientation:** in the telemetry and browser tools,
+**Disabled = hardened** (you turn data collection *off*). In the Defender
+tool the polarity is **reversed** - **On/Enabled = protected/recommended**,
+and turning a protection *off* reduces security. Each tool's status view is
+labelled accordingly.
 
 > **Disclaimer - USE AT YOUR OWN RISK.** These scripts modify registry
 > values, service startup types and scheduled tasks. They are provided as-is,
@@ -26,11 +38,11 @@ Read this before running either script with `-DisableAll` or the menu
 
 | Risk | Detail | Mitigation |
 |---|---|---|
-| **Reduced malware/phishing protection** | Disabling the `[SEC]` items (Windows SmartScreen, Edge SmartScreen, Chrome/Brave Safe Browsing) removes URL, download and app reputation warnings. This is a genuine security downgrade. | `[SEC]` items are excluded from bulk disable by default; only disable them deliberately, and only if other filtering (DNS/proxy/EDR) covers the gap. |
+| **Reduced malware/phishing protection** | Disabling the `[SEC]` items (Windows SmartScreen, Edge SmartScreen, Chrome/Brave Safe Browsing) removes URL, download and app reputation warnings. Likewise the **Defender** tool's `-DisableAll` / menu `D` turns off real-time monitoring, cloud protection, network protection and controlled folder access - a direct antivirus downgrade that leaves the machine without Defender coverage. | Browser `[SEC]` items are excluded from bulk disable by default; the Defender bulk disable requires an explicit switch/confirmation. Only disable deliberately, and only if other controls (DNS/proxy/EDR) cover the gap. |
 | **Managed / corporate machines** | On a domain-joined or Intune/MDM-managed device, these settings may be owned by your organisation. Changing them can conflict with GPO/MDM (which will usually re-apply), break compliance posture, or violate your IT policy. | Only run on machines you own or are authorised to change. Expect GPO/MDM to win any conflict. |
 | **MDM / provisioning breakage** | Disabling `dmwappushservice` can break provisioning-package installation (`Add-ProvisioningPackage`) and some MDM enrolment flows. | Skip that item (or re-enable it) on devices that will be enrolled. |
 | **Lost crash reporting** | Disabling Windows Error Reporting stops crash reports to Microsoft, and WER-based *local* workflows too (e.g. LocalDumps collection for debugging). | Re-enable WER while troubleshooting crashes. |
-| **Feature loss** | Some features depend on the data flows being disabled: Find My Device, Windows Insider Program (requires Optional diagnostic data), inking/typing personalisation, cross-device Timeline/resume, cloud speech recognition, live search suggestions. | Review the per-setting tables below and keep the items you use enabled. |
+| **Feature loss** | Some features depend on the data flows being disabled: Find My Device, Windows Insider Program (requires Optional diagnostic data), inking/typing personalisation, cross-device Timeline/resume, cloud speech recognition, live search suggestions, Cortana, cross-device clipboard paste, settings sync across devices, location-aware apps (maps/weather/timezone), Windows Copilot and Recall. | Review the per-setting tables below and keep the items you use enabled. |
 | **"Managed by your organization" notices** | While hardened, Windows Settings and browser settings pages show a managed/policy notice. This is expected policy behaviour, not malware - but it can alarm users and support desks. | `-EnableAll` removes all values written by the tools and clears the notice. |
 | **Updates can revert changes** | Windows feature updates, cumulative updates and browser updates can re-enable items or re-create scheduled tasks. | Re-run `-Report` after major updates; re-apply as needed. |
 | **Upgrade readiness data** | Disabling the Compatibility Appraiser stops the inventory Microsoft uses to assess upgrade compatibility for your device. | Low impact for most; re-enable before a major feature upgrade if you want Microsoft's compatibility safeguards. |
@@ -204,6 +216,64 @@ Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\System`
 | `HKLM\SOFTWARE\Policies\Microsoft\Windows\TextInput` -> `AllowLinguisticDataCollection` | `0` | Machine-wide policy blocking typing/inking samples (the policy behind TIPC). Requires admin, listed here as it belongs to the same feature. |
 | `HKCU\SOFTWARE\Policies\Microsoft\Windows\Explorer` -> `DisableSearchBoxSuggestions` | `1` | Removes Bing web search/suggestions from the Start menu and taskbar Search on Windows 11 - queries stay local. |
 | `HKCU\...\CurrentVersion\Search` -> `BingSearchEnabled` | `0` | The Windows 10-era equivalent of the above; largely ignored by Windows 11 but kept for completeness. |
+
+#### Search / Cortana cloud
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `AllowCortana` | `0` | Disables Cortana, which sends voice/text queries and context to Microsoft. |
+| `ConnectedSearchUseWeb` | `0` | Stops Start/Search sending typed queries to Bing for web results. |
+| `AllowCloudSearch` | `0` | Disables searching your OneDrive/Outlook/SharePoint content from the local search box (each query hits Microsoft cloud). |
+| `AllowSearchToUseLocation` | `0` | Stops the search/Cortana stack using your device location. |
+
+#### Cloud sync (clipboard / settings)
+Keys: `HKLM\SOFTWARE\Policies\Microsoft\Windows\System` and `...\SettingSync`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `AllowClipboardHistory` | `0` | Disables local clipboard history (Win+V). Local only, but a data-retention surface. |
+| `AllowCrossDeviceClipboard` | `0` | Disables syncing clipboard **contents** to the Microsoft cloud for cross-device paste - potentially very sensitive data. |
+| `DisableSettingSync` (SettingSync key) | `2` | Stops Windows settings/credentials/preferences syncing across devices via your Microsoft account. |
+
+#### Suggestions / ads (Content Delivery Manager - per-user, HKCU)
+Key: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `SilentInstalledAppsEnabled` | `0` | Stops Windows silently installing sponsored/suggested apps. |
+| `SystemPaneSuggestionsEnabled` | `0` | Removes app/content suggestions in the Start menu. |
+| `SubscribedContent-338393Enabled` | `0` | Removes suggested content in the Settings app. |
+| `SubscribedContent-338389Enabled` | `0` | Disables Windows tips/suggestion notifications. |
+| `RotatingLockScreenOverlayEnabled` | `0` | Disables Spotlight ads/"fun facts" overlaid on the lock screen. |
+
+#### Location
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `DisableLocation` | `1` | Turns off the system-wide location platform for all apps and services. |
+
+#### Find My Device
+Key: `HKLM\SOFTWARE\Policies\Microsoft\FindMyDevice`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `AllowFindMyDevice` | `0` | Stops Windows periodically reporting device location to your Microsoft account. |
+
+#### AI features (Copilot / Recall)
+
+| Key / Value | Hardened | Explanation |
+|---|---|---|
+| `HKCU\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot` -> `TurnOffWindowsCopilot` | `1` | Disables the Windows Copilot assistant (prompts and context leave the device to Microsoft/OpenAI services). |
+| `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI` -> `DisableAIDataAnalysis` | `1` | Disables **Recall** screen-snapshot capture and analysis. Local-first, but a large capture surface; only present on Copilot+ PCs (24H2+). |
+
+#### Network
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `DODownloadMode` | `0` | Delivery Optimization peer sharing: `0` = HTTP only (no peers), `1` = LAN peers, `3` = internet peers. Hardened = your PC neither pulls from nor advertises update chunks to other machines. |
 
 #### Windows SmartScreen `[SEC]` - reputation checks
 
@@ -423,13 +493,146 @@ such in the `Name` column).
 
 ---
 
+# 3. Manage-DefenderAntivirus.ps1
+
+Views the **health of Microsoft Defender Antivirus** and lets you view/toggle
+its protection settings, plus run common actions (update signatures,
+quick/full scan, view threats and exclusions).
+
+Unlike the other two tools this is a **security** tool, so the polarity is
+reversed: **On = protected (good, green)**, **Off = reduced protection (red)**.
+It uses the built-in Defender PowerShell module (`Get-MpComputerStatus`,
+`Get-MpPreference`, `Set-MpPreference`, `Update-MpSignature`, `Start-MpScan`)
+- **not** the registry, because Tamper Protection and policy layering make
+direct registry edits to Defender unreliable.
+
+## Quick start
+
+```powershell
+# View health + protection status (read-only, works as standard user)
+.\Manage-DefenderAntivirus.ps1 -Report
+
+# Interactive menu (run ELEVATED to change settings, scan or update)
+.\Manage-DefenderAntivirus.ps1
+
+# Set every protection to its recommended (ON) state
+.\Manage-DefenderAntivirus.ps1 -EnableRecommended
+
+# Turn ALL protections OFF (reduces security; also stops Defender cloud
+# lookups and sample submission to Microsoft)
+.\Manage-DefenderAntivirus.ps1 -DisableAll
+
+# Update signatures / run a scan and exit
+.\Manage-DefenderAntivirus.ps1 -Update
+.\Manage-DefenderAntivirus.ps1 -QuickScan
+.\Manage-DefenderAntivirus.ps1 -FullScan
+
+# Export health + config to CSV
+.\Manage-DefenderAntivirus.ps1 -Csv .\defender-status.csv
+```
+
+## Tamper Protection
+
+On Windows 11, **Tamper Protection** is on by default and deliberately
+**blocks programmatic changes** to core protection (real-time monitoring,
+etc.). When it is on, `Set-MpPreference` calls for those items will fail -
+the tool detects this, shows a NOTE, and reports the failure clearly rather
+than pretending the change succeeded. To change guarded items you must first
+turn Tamper Protection off in the **Windows Security app** (Virus & threat
+protection -> Manage settings) or via Intune. The tool intentionally cannot
+disable Tamper Protection for you - that is by design.
+
+## Health summary (read-only)
+
+From `Get-MpComputerStatus`: running mode (Normal / Passive / EDR Block -
+passive means another AV is primary and Defender settings are inactive),
+AntiMalware service, real-time protection, behaviour monitor, on-access
+(IOAV), network inspection (NIS), Tamper Protection state, signature version
+and **age in days** (green <=2, yellow <=7, red older), engine version, and
+last quick/full scan times.
+
+## Configurable protections
+
+Each maps to one `Set-MpPreference` parameter. "Recommended" is always **On**.
+
+| Protection | Preference | Recommended | Explanation |
+|---|---|---|---|
+| Real-time Monitoring | `DisableRealtimeMonitoring` | On (`$false`) | Core on-access scanning. Guarded by Tamper Protection. |
+| Behavior Monitoring | `DisableBehaviorMonitoring` | On (`$false`) | Detects malicious behaviour patterns at runtime. |
+| Downloads/Attachment Scan | `DisableIOAVProtection` | On (`$false`) | Scans files downloaded from internet/email. |
+| Script Scanning | `DisableScriptScanning` | On (`$false`) | Scans scripts before they execute. |
+| Archive Scanning | `DisableArchiveScanning` | On (`$false`) | Scans inside .zip/.rar/etc. |
+| Email Scanning | `DisableEmailScanning` | On (`$false`) | Parses mailbox/email files during scans. |
+| Removable Drive Scanning | `DisableRemovableDriveScanning` | On (`$false`) | Includes USB media in full scans. |
+| Cloud-delivered Protection | `MAPSReporting` | Advanced (`2`) | Real-time cloud lookups (`0` off, `1` basic, `2` advanced). |
+| Automatic Sample Submission `[PRIV]` | `SubmitSamplesConsent` | SendSafeSamples (`1`) | Needed for full cloud protection; **sends files to Microsoft**. `2` = Never (privacy). |
+| Cloud Block Level | `CloudBlockLevel` | High (`2`) | Aggressiveness of cloud blocking; higher = safer but more false positives. |
+| PUA Protection | `PUAProtection` | Enabled (`1`) | Blocks potentially unwanted apps (adware/bundleware); `2` = audit. |
+| Network Protection | `EnableNetworkProtection` | Enabled (`1`) | Blocks connections to malicious domains/IPs; `2` = audit. |
+| Controlled Folder Access | `EnableControlledFolderAccess` | Enabled (`1`) | Anti-ransomware; blocks untrusted apps writing to protected folders. May need app allow-listing. |
+
+`[PRIV]` marks the one setting that improves protection but also sends data
+to Microsoft, so you can make an informed choice. **Audit mode** (for PUA /
+Network Protection / Controlled Folder Access) shows as `Other (AuditMode)` -
+it logs but does not block, useful for testing before enforcing.
+
+## Menu commands
+
+| Command | Action |
+|---|---|
+| `<n>` | Toggle protection *n* (disabling asks for `YES` confirmation) |
+| `e <n>` / `d <n>` | Enable / disable item *n* (`d` warns and confirms) |
+| `E` | Enable **all** recommended protections |
+| `D` | Disable **all** protections (requires typing `DISABLE-ALL`) |
+| `u` | Update signatures (`Update-MpSignature`) |
+| `s` / `f` | Run quick / full scan (`Start-MpScan`) |
+| `t` | Show recent threat detections |
+| `x` | Show configured exclusions (paths/extensions/processes) |
+| `r` / `c <path>` / `q` | Refresh / export CSV / quit |
+
+### Bulk disable
+
+This is a privacy/telemetry-hardening toolkit for advanced users, so a bulk
+disable is provided to match the other scripts:
+
+- **CLI:** `-DisableAll` runs immediately (scriptable), then reprints status.
+- **Menu:** `D` requires typing `DISABLE-ALL` to confirm.
+
+Disabling here doubles as privacy hardening: it sets `MAPSReporting` to
+Disabled and `SubmitSamplesConsent` to Never, which **stops Defender's cloud
+lookups and file/sample uploads to Microsoft**. Note that with **Tamper
+Protection on**, core items (real-time monitoring, etc.) stay ON regardless -
+turn Tamper Protection off in the Windows Security app first if you need
+those off too. Individual protections can still be re-enabled with `e <n>`
+or restored wholesale with `E` / `-EnableRecommended`.
+
+## Requirements and caveats
+
+- Needs the built-in **Defender module**; the tool exits cleanly if the
+  cmdlets are absent (e.g. Defender removed, or a Server SKU without the
+  feature).
+- Viewing works as a standard user; **changing settings, scanning and
+  updating require Administrator**.
+- If a **third-party AV** is installed, Defender runs in **passive mode** and
+  most of these settings will not take effect until Defender is primary
+  again. The running-mode line makes this visible.
+- Exclusions are shown (`x`) but not edited here - review them, as each
+  exclusion is a gap in coverage that malware can hide behind.
+
+## CSV output columns
+
+`Group (Health/Protection), Name, State, Note`
+
+---
+
 # Files
 
 | File | Purpose |
 |---|---|
 | `Manage-WindowsTelemetry.ps1` | Windows telemetry view + control |
 | `Manage-BrowserPrivacy.ps1` | Browser privacy view + hardening |
+| `Manage-DefenderAntivirus.ps1` | Defender health + protection management |
 | `README.md` | This file |
 
-Both CSV exports are useful for fleet auditing: run with `-Csv` on multiple
+All CSV exports are useful for fleet auditing: run with `-Csv` on multiple
 machines and diff or aggregate the results.

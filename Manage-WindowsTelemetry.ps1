@@ -14,9 +14,12 @@
               appraiser, Cloud Content / Tailored Experiences, Activity
               History, Advertising ID, Feedback (SIUF), inking/typing and
               speech data, search suggestions, DiagTrack + related services,
-              telemetry scheduled tasks, and Windows SmartScreen ([SEC]:
-              apps-and-files check, Store app URL check, Enhanced Phishing
-              Protection - excluded from bulk disable unless requested).
+              telemetry scheduled tasks, Cortana/cloud search, cloud clipboard
+              and settings sync, suggestions/ads (Content Delivery Manager),
+              location, Find My Device, Copilot/Recall, Delivery Optimization,
+              and Windows SmartScreen ([SEC]: apps-and-files check, Store app
+              URL check, Enhanced Phishing Protection - excluded from bulk
+              disable unless requested).
 
     Notes   : - Windows PowerShell 5.1 compatible. ASCII-only source.
               - Registry (HKLM) and service changes require Administrator.
@@ -381,6 +384,92 @@ function Get-Controls {
         -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\Search' `
         -ValueName 'BingSearchEnabled' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
         -Note 'Win10-era value; largely ignored on Win11') )
+
+    # --- Search / Cortana cloud ---
+    [void]$c.Add( (New-RegControl -Name 'Cortana' -Category 'Search/Cortana' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\Windows Search' `
+        -ValueName 'AllowCortana' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable) )
+
+    [void]$c.Add( (New-RegControl -Name 'Search Web Results (Cloud)' -Category 'Search/Cortana' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\Windows Search' `
+        -ValueName 'ConnectedSearchUseWeb' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
+        -Note 'Bing web results in Start/Search') )
+
+    [void]$c.Add( (New-RegControl -Name 'Cloud Content Search' -Category 'Search/Cortana' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\Windows Search' `
+        -ValueName 'AllowCloudSearch' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
+        -Note 'Search of OneDrive/Outlook/SharePoint content') )
+
+    [void]$c.Add( (New-RegControl -Name 'Search Uses Location' -Category 'Search/Cortana' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\Windows Search' `
+        -ValueName 'AllowSearchToUseLocation' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable) )
+
+    # --- Cloud sync (clipboard / settings) ---
+    [void]$c.Add( (New-RegControl -Name 'Clipboard History' -Category 'Cloud Sync' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\System' `
+        -ValueName 'AllowClipboardHistory' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
+        -Note 'Local clipboard history (Win+V)') )
+
+    [void]$c.Add( (New-RegControl -Name 'Cross-Device Clipboard (Cloud)' -Category 'Cloud Sync' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\System' `
+        -ValueName 'AllowCrossDeviceClipboard' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
+        -Note 'Syncs clipboard contents to Microsoft cloud') )
+
+    [void]$c.Add( (New-RegControl -Name 'Settings Sync' -Category 'Cloud Sync' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\SettingSync' `
+        -ValueName 'DisableSettingSync' -OnValue 0 -OffValue 2 -Default On -RemoveOnEnable `
+        -Note 'Syncs Windows settings across devices via MS account') )
+
+    # --- Suggestions / ads (Content Delivery Manager, per-user) ---
+    [void]$c.Add( (New-RegControl -Name 'Auto-install Suggested Apps' -Category 'Suggestions/Ads' `
+        -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' `
+        -ValueName 'SilentInstalledAppsEnabled' -OnValue 1 -OffValue 0 -Default On) )
+
+    [void]$c.Add( (New-RegControl -Name 'Start Menu Suggestions' -Category 'Suggestions/Ads' `
+        -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' `
+        -ValueName 'SystemPaneSuggestionsEnabled' -OnValue 1 -OffValue 0 -Default On) )
+
+    [void]$c.Add( (New-RegControl -Name 'Settings App Suggestions' -Category 'Suggestions/Ads' `
+        -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' `
+        -ValueName 'SubscribedContent-338393Enabled' -OnValue 1 -OffValue 0 -Default On) )
+
+    [void]$c.Add( (New-RegControl -Name 'Tips and Notifications' -Category 'Suggestions/Ads' `
+        -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' `
+        -ValueName 'SubscribedContent-338389Enabled' -OnValue 1 -OffValue 0 -Default On `
+        -Note 'Windows tips/suggestion notifications') )
+
+    [void]$c.Add( (New-RegControl -Name 'Lock Screen Spotlight' -Category 'Suggestions/Ads' `
+        -Hive HKCU -Path 'SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' `
+        -ValueName 'RotatingLockScreenOverlayEnabled' -OnValue 1 -OffValue 0 -Default On `
+        -Note 'Spotlight ads/facts on the lock screen') )
+
+    # --- Location ---
+    [void]$c.Add( (New-RegControl -Name 'Location Platform' -Category 'Location' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors' `
+        -ValueName 'DisableLocation' -OnValue 0 -OffValue 1 -Default On -RemoveOnEnable `
+        -Note 'System-wide location services') )
+
+    # --- Find My Device ---
+    [void]$c.Add( (New-RegControl -Name 'Find My Device' -Category 'Find My Device' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\FindMyDevice' `
+        -ValueName 'AllowFindMyDevice' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
+        -Note 'Periodic location reporting to your MS account') )
+
+    # --- AI features (Copilot / Recall) ---
+    [void]$c.Add( (New-RegControl -Name 'Windows Copilot' -Category 'AI' `
+        -Hive HKCU -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' `
+        -ValueName 'TurnOffWindowsCopilot' -OnValue 0 -OffValue 1 -Default On -RemoveOnEnable) )
+
+    [void]$c.Add( (New-RegControl -Name 'Recall (AI Data Analysis)' -Category 'AI' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsAI' `
+        -ValueName 'DisableAIDataAnalysis' -OnValue 0 -OffValue 1 -Default On -RemoveOnEnable `
+        -Note 'Recall screen snapshots (Copilot+ PCs)') )
+
+    # --- Delivery Optimization (update peer sharing) ---
+    [void]$c.Add( (New-RegControl -Name 'Delivery Optimization P2P' -Category 'Network' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' `
+        -ValueName 'DODownloadMode' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable `
+        -Note '0=HTTP only (no peers) 1=LAN 3=Internet peers') )
 
     # --- Windows SmartScreen: OS-level URL/file reputation (SECURITY) ---
     # These check apps, files and URLs against Microsoft's cloud reputation
