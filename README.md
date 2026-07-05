@@ -104,18 +104,91 @@ status view whenever any `[SEC]` item is OFF.
 
 ## What is covered
 
-### Registry (policy and per-user)
+### Registry settings reference
 
-| Area | Items |
-|---|---|
-| Core telemetry | `AllowTelemetry` (policy + non-policy), feedback notifications, `LimitDiagnosticLogCollection`, `DisableOneSettingsDownloads` |
-| App compatibility | Appraiser telemetry (`AITEnable`), Inventory Collector |
-| Error Reporting (the modern successor to Dr. Watson) | WER on/off (non-policy + policy), `DontSendAdditionalData`, consent level (`DefaultConsent`) |
-| CEIP | `CEIPEnable` (SQM Client) |
-| Cloud content | Consumer Features, Tailored Experiences (policy) |
-| Activity history | Publish / Upload User Activities |
-| Per-user privacy (no admin needed) | Advertising ID, Tailored Experiences, Feedback frequency (SIUF), implicit ink/text collection, Typing Insights (TIPC), online speech recognition, linguistic data collection, Search box web suggestions (Win11) + legacy `BingSearchEnabled` |
-| SmartScreen `[SEC]` | Apps-and-files check (`EnableSmartScreen` policy), Store apps URL check (`EnableWebContentEvaluation`), Enhanced Phishing Protection (`WTDS ServiceEnabled`) |
+All values are `REG_DWORD`. "Hardened" is the value the tool writes when you
+disable an item. "Default" is Windows out-of-box behaviour: for most policy
+values that means **the value is absent** - which is why enabling an item
+usually *removes* the value rather than writing one.
+
+#### Core telemetry
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `AllowTelemetry` | `0` | The master diagnostic-data level sent by the DiagTrack service. `0` = Security (honoured only on Enterprise/Education), `1` = Required, `3` = Optional (full). Default: absent = user's Settings choice applies. |
+| `DoNotShowFeedbackNotifications` | `1` | Stops Windows asking for feedback via notifications ("How is your experience?"). Collection-adjacent rather than collection itself. |
+| `LimitDiagnosticLogCollection` | `1` | Blocks the upload of *additional* diagnostic logs Microsoft can request on top of the normal telemetry stream. |
+| `DisableOneSettingsDownloads` | `1` | Stops Windows fetching remote telemetry configuration ("OneSettings"). With this off, Microsoft cannot remotely adjust what diagnostic data is sampled. |
+
+Key: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `AllowTelemetry` | `0` | Older, non-Group-Policy location for the same setting; some components read this path, so the tool sets both. |
+
+#### Application compatibility (appraiser)
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\AppCompat`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `AITEnable` | `0` | Application Impact Telemetry: usage/launch data about installed programs, gathered by the Compatibility Appraiser and sent to Microsoft to assess upgrade compatibility. |
+| `DisableInventory` | `1` | Stops the Inventory Collector uploading a list of installed applications, devices and drivers. |
+
+#### Windows Error Reporting (successor to Dr. Watson)
+
+| Key / Value | Hardened | Explanation |
+|---|---|---|
+| `HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting` -> `Disabled` | `1` | Turns off crash/hang report generation and submission machine-wide (non-policy location, same one the old `serverweroptin` flow used). |
+| `HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting` -> `Disabled` | `1` | Group Policy variant of the same switch; wins over the non-policy flag if both are set. |
+| `...Policies...\Windows Error Reporting` -> `DontSendAdditionalData` | `1` | Blocks the *second stage* of WER: after the initial crash signature, Microsoft can request extra payloads (memory dumps, files). This stops those. |
+| `HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\Consent` -> `DefaultConsent` | `1` | How much WER may send without asking: `1` = always ask first, `2` = send parameters only, `3` = parameters + safe data, `4` = send everything automatically. Hardened = always ask. |
+
+#### Customer Experience Improvement Program
+Key: `HKLM\SOFTWARE\Microsoft\SQMClient\Windows`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `CEIPEnable` | `0` | Opts the machine out of CEIP/SQM ("Software Quality Metrics") - anonymous usage statistics collected by older Windows components and the CEIP scheduled tasks. |
+
+#### Cloud content and suggestions
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `DisableWindowsConsumerFeatures` | `1` | Stops "consumer experiences": auto-installed sponsored/suggested Store apps, promotional tiles and app suggestions in Start. |
+| `DisableTailoredExperiencesWithDiagnosticData` | `1` | Stops Microsoft using your diagnostic data to personalise tips, ads and recommendations shown inside Windows. |
+
+#### Activity history (Timeline)
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Windows\System`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `PublishUserActivities` | `0` | Stops apps recording "activities" (documents opened, sites visited) into the local activity feed. |
+| `UploadUserActivities` | `0` | Stops the activity feed being synced to the Microsoft cloud (cross-device timeline/resume). |
+
+#### Per-user privacy (HKCU - changeable without admin)
+
+| Key / Value | Hardened | Explanation |
+|---|---|---|
+| `HKCU\...\CurrentVersion\AdvertisingInfo` -> `Enabled` | `0` | Disables the per-user Advertising ID that apps use to correlate you across apps for ad targeting. |
+| `HKCU\...\CurrentVersion\Privacy` -> `TailoredExperiencesWithDiagnosticDataEnabled` | `0` | User-level counterpart of Tailored Experiences: no diagnostic-data-driven tips/ads for this account. |
+| `HKCU\SOFTWARE\Microsoft\Siuf\Rules` -> `NumberOfSIUFInPeriod` | `0` | Feedback frequency ("System Initiated User Feedback"). `0` = Windows never asks for feedback. Default: absent = automatic. |
+| `HKCU\SOFTWARE\Microsoft\InputPersonalization` -> `RestrictImplicitInkCollection` | `1` | Blocks collection of handwriting/ink samples used to build your personal dictionary. |
+| `HKCU\SOFTWARE\Microsoft\InputPersonalization` -> `RestrictImplicitTextCollection` | `1` | Same for typed text - stops typing history feeding personalization. |
+| `HKCU\SOFTWARE\Microsoft\Input\TIPC` -> `Enabled` | `0` | The "Improve inking and typing" telemetry channel - samples of what you type/ink sent as diagnostic data. |
+| `HKCU\...\Speech_OneCore\Settings\OnlineSpeechPrivacy` -> `HasAccepted` | `0` | Consent flag for cloud (online) speech recognition; `0` = voice audio is not sent to Microsoft speech services. Default is off until a user consents. |
+| `HKLM\SOFTWARE\Policies\Microsoft\Windows\TextInput` -> `AllowLinguisticDataCollection` | `0` | Machine-wide policy blocking typing/inking samples (the policy behind TIPC). Requires admin, listed here as it belongs to the same feature. |
+| `HKCU\SOFTWARE\Policies\Microsoft\Windows\Explorer` -> `DisableSearchBoxSuggestions` | `1` | Removes Bing web search/suggestions from the Start menu and taskbar Search on Windows 11 - queries stay local. |
+| `HKCU\...\CurrentVersion\Search` -> `BingSearchEnabled` | `0` | The Windows 10-era equivalent of the above; largely ignored by Windows 11 but kept for completeness. |
+
+#### Windows SmartScreen `[SEC]` - reputation checks
+
+| Key / Value | Hardened | Explanation |
+|---|---|---|
+| `HKLM\SOFTWARE\Policies\Microsoft\Windows\System` -> `EnableSmartScreen` | `0` | The shell "Check apps and files" feature: hashes/metadata of downloaded executables are checked against Microsoft's reputation service before they run. |
+| `HKCU\...\CurrentVersion\AppHost` -> `EnableWebContentEvaluation` | `0` | SmartScreen URL checking for web content loaded inside Microsoft Store apps. |
+| `HKLM\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components` -> `ServiceEnabled` | `0` | Enhanced Phishing Protection (Windows 11): warns when you type your Windows password into a suspicious site or store it insecurely. |
 
 ### Services
 
@@ -234,26 +307,89 @@ Two things to expect:
   reporting that policies are active, not a malfunction; `-EnableAll`
   removes it again.
 
-## What is covered
+## Registry settings reference
 
-| Browser | Policies |
-|---|---|
-| **Edge** | Diagnostic data, personalization reporting, user feedback, search suggestions, Bing address-bar provider, Shopping Assistant, Rewards, Web Widget, Spotlight recommendations, Do Not Track, navigation-error web service, alternate error pages, network prediction (prefetch) |
-| **Chrome** | Metrics reporting (UMA), search suggestions, Safe Browsing extended reporting, URL-keyed data collection, cloud spell check, alternate error pages, network prediction, feedback surveys, Privacy Sandbox (prompt, Ad Topics, site-suggested ads, ad measurement) |
-| **Firefox** | Telemetry, Firefox Studies (Shield), Default Browser Agent (daily Mozilla ping), Pocket |
-| **Brave** | Rewards, Wallet, VPN, Tor windows, search suggestions (Chromium policy) |
-| **`[SEC]` URL checks** | Edge SmartScreen (site/URL, PUA, DNS lookups, typosquatting); Chrome & Brave Safe Browsing protection level |
+All values are `REG_DWORD` policies. "Hardened" is what the tool writes when
+you disable an item; enabling always *removes* the value (browser default =
+absent). Browsers pick up changes on next start.
 
-Notes:
+### Microsoft Edge
+Key: `HKLM\SOFTWARE\Policies\Microsoft\Edge`
 
-- Under `-DisableAll`, Safe Browsing / SmartScreen stay ON; only the
-  *extended reporting* (extra data to Google) is hardened by default. Full
+| Value | Hardened | Explanation |
+|---|---|---|
+| `DiagnosticData` | `0` | Edge's own usage/crash telemetry level: `0` = off, `1` = required, `2` = optional (full). Separate from the Windows AllowTelemetry setting. |
+| `PersonalizationReportingEnabled` | `0` | Stops Edge sending browsing history to Microsoft to personalise ads, news, search and shopping. |
+| `UserFeedbackAllowed` | `0` | Removes the Send Feedback feature and its data uploads (screenshots, diagnostics attached to feedback). |
+| `SearchSuggestEnabled` | `0` | Stops the address bar sending every keystroke to the search provider for live suggestions. Typed text stays local until you press Enter. |
+| `AddressBarMicrosoftSearchInBingProviderEnabled` | `0` | Stops address-bar queries being sent to Microsoft Search in Bing (work/school results). |
+| `EdgeShoppingAssistantEnabled` | `0` | Disables the shopping assistant (coupons, price comparison, cashback), which shares the pages you shop on with Microsoft. |
+| `ShowMicrosoftRewards` | `0` | Hides Microsoft Rewards, which tracks Bing searches/purchases for points. |
+| `WebWidgetAllowed` | `0` | Disables the Edge search bar widget (a persistent background process with web access). |
+| `SpotlightExperiencesAndRecommendationsEnabled` | `0` | Disables Spotlight tips/recommendations delivered from Microsoft services. |
+| `ConfigureDoNotTrack` | `1` | Hardened = Edge sends the "Do Not Track" (DNT) request header with all traffic. (Advisory only - sites may ignore it.) |
+| `ResolveNavigationErrorsUseWebService` | `0` | Stops Edge using a Microsoft web service to diagnose connection problems (which reports the failing address). |
+| `AlternateErrorPagesEnabled` | `0` | Stops Edge sending details of not-found/error pages to Microsoft to fetch suggestion pages. |
+| `NetworkPredictionOptions` | `2` | Disables DNS prefetching / preconnecting to links the browser *predicts* you may visit (`0` = predict always, `2` = never). Prediction leaks hostnames you never actually clicked. |
+| `SmartScreenEnabled` `[SEC]` | `0` | Microsoft Defender SmartScreen: checks visited sites and downloads against Microsoft's reputation service. Disabling removes phishing/malware warnings. |
+| `SmartScreenPuaEnabled` `[SEC]` | `0` | SmartScreen blocking of potentially unwanted applications (PUA) in downloads. |
+| `SmartScreenDnsRequestsEnabled` `[SEC]` | `0` | Stops the DNS requests SmartScreen makes for site reputation lookups. |
+| `TyposquattingCheckerEnabled` `[SEC]` | `0` | Disables warnings when you mistype a domain and land on a lookalike (typosquatted) site. |
+
+### Google Chrome
+Key: `HKLM\SOFTWARE\Policies\Google\Chrome`
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `MetricsReportingEnabled` | `0` | UMA metrics: anonymised usage statistics and crash reports sent to Google. |
+| `SearchSuggestEnabled` | `0` | Stops the omnibox sending keystrokes to the search provider for live suggestions. |
+| `SafeBrowsingExtendedReportingEnabled` | `0` | Stops the *extra* Safe Browsing reports (page contents, system info) sent to Google. Safe Browsing protection itself stays on. |
+| `SafeBrowsingProtectionLevel` `[SEC]` | `0` | The Safe Browsing URL check itself: `0` = off (no URL reputation checks at all), `1` = standard, `2` = enhanced (more data to Google, more protection). |
+| `UrlKeyedAnonymizedDataCollectionEnabled` | `0` | Stops URL-keyed data collection - the URLs of pages you visit sent to Google to improve services. |
+| `SpellCheckServiceEnabled` | `0` | Disables the *cloud* spell checker, which sends typed text to Google. Local spell check keeps working. |
+| `AlternateErrorPagesEnabled` | `0` | Stops error-page details being sent to Google for "did you mean" suggestions. |
+| `NetworkPredictionOptions` | `2` | Same as Edge: disables predictive DNS prefetch/preconnect (`0` = always, `2` = never). |
+| `FeedbackSurveysEnabled` | `0` | Disables Google's in-browser Happiness Tracking Surveys. |
+| `PrivacySandboxPromptEnabled` | `0` | Suppresses the Privacy Sandbox consent prompt; required for the three policies below to take effect. |
+| `PrivacySandboxAdTopicsEnabled` | `0` | Disables the Topics API - Chrome deriving advertising interest categories from your browsing history. |
+| `PrivacySandboxSiteEnabledAdsEnabled` | `0` | Disables site-suggested ads (Protected Audience / remarketing without third-party cookies). |
+| `PrivacySandboxAdMeasurementEnabled` | `0` | Disables the Attribution Reporting API (ad click/conversion measurement). |
+
+### Mozilla Firefox
+Key: `HKLM\SOFTWARE\Policies\Mozilla\Firefox`
+
+Firefox policies are inverted ("Disable..."), so hardened = `1`.
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `DisableTelemetry` | `1` | Stops Firefox usage, performance and technical telemetry to Mozilla. |
+| `DisableFirefoxStudies` | `1` | Stops Shield/Nimbus studies - remote experiments and preference rollouts Mozilla can push to your browser. |
+| `DisableDefaultBrowserAgent` | `1` | Removes the Default Browser Agent - a scheduled task that pings Mozilla daily with default-browser and OS info, even when Firefox is closed. |
+| `DisablePocket` | `1` | Disables Pocket integration and its sponsored/recommended stories on the new-tab page. |
+
+Note: Firefox's Safe Browsing cannot be toggled from the registry (it lives
+in `browser.safebrowsing.*` preferences / `policies.json`), so it is
+deliberately not included here.
+
+### Brave
+Key: `HKLM\SOFTWARE\Policies\BraveSoftware\Brave`
+
+Brave sends comparatively little telemetry by default; these harden its
+bundled feature surface, each of which contacts Brave services.
+
+| Value | Hardened | Explanation |
+|---|---|---|
+| `BraveRewardsDisabled` | `1` | Disables Brave Rewards (BAT ads/attention tracking). |
+| `BraveWalletDisabled` | `1` | Disables the built-in crypto wallet. |
+| `BraveVPNDisabled` | `1` | Disables the Brave VPN feature and its account checks. |
+| `TorDisabled` | `1` | Disables "Private window with Tor". (Feature-surface reduction; Tor itself is a privacy feature - leave enabled if you use it.) |
+| `SearchSuggestEnabled` | `0` | Chromium policy honoured by Brave: stops keystroke-by-keystroke search suggestions. |
+| `SafeBrowsingProtectionLevel` `[SEC]` | `0` | Same as Chrome: `0` disables URL reputation checks entirely. |
+
+### General notes
+
+- Under `-DisableAll`, Safe Browsing / SmartScreen (`[SEC]`) stay ON; full
   URL-check disabling requires `-IncludeSecurity` or the menu `S` command.
-- The three Chrome Privacy Sandbox ad policies require the Privacy Sandbox
-  prompt policy to be Disabled as well - the tool includes it.
-- Brave sends comparatively little telemetry by default; its entries harden
-  the bundled feature surface (Rewards/Wallet/VPN/Tor), each of which
-  contacts Brave services.
 - DNS-over-HTTPS policies are intentionally not touched - DoH is a privacy
   *gain* in most settings and is better configured deliberately per network.
 
