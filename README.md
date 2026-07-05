@@ -12,10 +12,33 @@ Both share the same UX: a color-coded status view (**Enabled** = collecting,
 `-DisableAll` / `-EnableAll`, `-Report`, and CSV export. Both are ASCII-only,
 BOM-free, module-free, and run in stock `powershell.exe` on Windows 11.
 
-> **Disclaimer:** Changing telemetry, service, task and browser-policy
-> settings alters system behaviour. Review the scripts before running them,
-> test on a non-production machine first, and consider a restore point.
-> No warranty.
+> **Disclaimer - USE AT YOUR OWN RISK.** These scripts modify registry
+> values, service startup types and scheduled tasks. They are provided as-is,
+> with **no warranty of any kind**; you are solely responsible for what they
+> do to your systems. Review the code before running it, test on a
+> non-production machine first, and create a System Restore point (or
+> equivalent backup) before applying changes.
+
+## Key risks
+
+Read this before running either script with `-DisableAll` or the menu
+`D`/`S` commands:
+
+| Risk | Detail | Mitigation |
+|---|---|---|
+| **Reduced malware/phishing protection** | Disabling the `[SEC]` items (Windows SmartScreen, Edge SmartScreen, Chrome/Brave Safe Browsing) removes URL, download and app reputation warnings. This is a genuine security downgrade. | `[SEC]` items are excluded from bulk disable by default; only disable them deliberately, and only if other filtering (DNS/proxy/EDR) covers the gap. |
+| **Managed / corporate machines** | On a domain-joined or Intune/MDM-managed device, these settings may be owned by your organisation. Changing them can conflict with GPO/MDM (which will usually re-apply), break compliance posture, or violate your IT policy. | Only run on machines you own or are authorised to change. Expect GPO/MDM to win any conflict. |
+| **MDM / provisioning breakage** | Disabling `dmwappushservice` can break provisioning-package installation (`Add-ProvisioningPackage`) and some MDM enrolment flows. | Skip that item (or re-enable it) on devices that will be enrolled. |
+| **Lost crash reporting** | Disabling Windows Error Reporting stops crash reports to Microsoft, and WER-based *local* workflows too (e.g. LocalDumps collection for debugging). | Re-enable WER while troubleshooting crashes. |
+| **Feature loss** | Some features depend on the data flows being disabled: Find My Device, Windows Insider Program (requires Optional diagnostic data), inking/typing personalisation, cross-device Timeline/resume, cloud speech recognition, live search suggestions. | Review the per-setting tables below and keep the items you use enabled. |
+| **"Managed by your organization" notices** | While hardened, Windows Settings and browser settings pages show a managed/policy notice. This is expected policy behaviour, not malware - but it can alarm users and support desks. | `-EnableAll` removes all values written by the tools and clears the notice. |
+| **Updates can revert changes** | Windows feature updates, cumulative updates and browser updates can re-enable items or re-create scheduled tasks. | Re-run `-Report` after major updates; re-apply as needed. |
+| **Upgrade readiness data** | Disabling the Compatibility Appraiser stops the inventory Microsoft uses to assess upgrade compatibility for your device. | Low impact for most; re-enable before a major feature upgrade if you want Microsoft's compatibility safeguards. |
+| **Partial effect on Home/Pro** | `AllowTelemetry=0` is only fully honoured on Enterprise/Education SKUs; Home/Pro still send Required diagnostic data. | Understand "hardened" is not "zero data" on consumer SKUs. |
+
+If any of these matter for your environment and you are unsure: run
+`-Report` (read-only) first, and change items one at a time instead of using
+the bulk commands.
 
 ---
 
