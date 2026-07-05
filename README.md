@@ -68,6 +68,11 @@ services and scheduled tasks** from one place.
 # Interactive menu (run from an ELEVATED PowerShell to change HKLM/services/tasks)
 .\Manage-WindowsTelemetry.ps1
 
+# USER MODE - per-user (HKCU) items only, NO admin needed. Run as yourself.
+.\Manage-WindowsTelemetry.ps1 -UserMode
+.\Manage-WindowsTelemetry.ps1 -UserMode -DisableAll   # harden your profile
+.\Manage-WindowsTelemetry.ps1 -UserMode -Report
+
 # One-shot hardening: turn all telemetry OFF (keeps [SEC] SmartScreen ON)
 .\Manage-WindowsTelemetry.ps1 -DisableAll
 
@@ -111,14 +116,45 @@ Two design rules worth knowing:
    = Automatic, `dmwappushservice` / `WerSvc` = Manual), not blanket
    Automatic.
 
+## User mode (`-UserMode`) - recommended for personal use
+
+For personal privacy/telemetry hardening, run **user mode** as your normal
+(unelevated) account:
+
+```powershell
+.\Manage-WindowsTelemetry.ps1 -UserMode
+```
+
+User mode shows **only the per-user (HKCU) items** - Advertising ID, tailored
+experiences, inking/typing, feedback frequency, search suggestions,
+Suggestions/Ads, Windows Copilot, and the Store-apps SmartScreen check. All
+of these change **your account only** and need **no administrator rights**.
+
+Why it's the safer choice for a single-user machine:
+
+- **No elevation, no hive mix-up.** System-wide (HKLM) items require admin,
+  and the usual way to get admin is to elevate. But if you elevate using a
+  *different* admin account, `HKCU` inside that elevated session points at the
+  **admin's** profile - so per-user toggles silently apply to the wrong user.
+  Running user mode unelevated as yourself writes your own hive, every time.
+- **Nothing you can't set from the Settings app** - it's the same per-user
+  switches, just scripted and repeatable.
+
+The header shows `MODE: USER` or `MODE: FULL`. In the interactive menu press
+**`m`** to switch between them at any time; `-DisableAll` / `-EnableAll` /
+`-Report` / `-Csv` all respect the mode. To also harden system-wide items
+(diagnostic data, DiagTrack, scheduled tasks, etc.), run **without**
+`-UserMode` from an elevated PowerShell.
+
 ## Interactive menu commands
 
 | Command | Action |
 |---|---|
 | `<n>` | Toggle item *n* (Enabled <-> Disabled) |
 | `e <n>` / `d <n>` | Enable / disable item *n* |
-| `E` / `D` (uppercase) | Enable / disable **ALL** items (asks for `YES` confirmation; `D` keeps `[SEC]` items ON) |
+| `E` / `D` (uppercase) | Enable / disable **ALL** shown items (asks for `YES` confirmation; `D` keeps `[SEC]` items ON) |
 | `S` | Disable the `[SEC]` SmartScreen features (requires typing `DISABLE-SECURITY`) |
+| `m` | Toggle between USER mode (per-user only) and FULL mode (all items) |
 | `r` | Refresh the view |
 | `c <path>` | Export status to CSV |
 | `q` | Quit |

@@ -29,8 +29,18 @@
                 restore the true Windows default (absent), so the Settings UI
                 is not left in a "managed by your organization" state.
 
+    User mode:
+        -UserMode restricts the tool to per-user (HKCU) items only - the ones
+        that need NO administrator rights. Run it as your normal (unelevated)
+        account for personal privacy hardening: it writes only YOUR user hive,
+        so it also avoids the "HKCU points at the admin's profile when you
+        elevate as a different user" pitfall. HKLM policy/service/task items
+        are hidden in this mode.
+
     Usage   :
-        .\Manage-WindowsTelemetry.ps1                 # interactive menu
+        .\Manage-WindowsTelemetry.ps1                 # interactive menu (all items)
+        .\Manage-WindowsTelemetry.ps1 -UserMode       # per-user items only, no admin
+        .\Manage-WindowsTelemetry.ps1 -UserMode -DisableAll   # harden your user profile
         .\Manage-WindowsTelemetry.ps1 -Report         # print status and exit
         .\Manage-WindowsTelemetry.ps1 -DisableAll     # turn telemetry OFF (keeps [SEC] ON)
         .\Manage-WindowsTelemetry.ps1 -DisableAll -IncludeSecurity  # also disable SmartScreen
@@ -48,6 +58,7 @@ param(
     [switch]$DisableAll,
     [switch]$EnableAll,
     [switch]$IncludeSecurity,   # also disable [SEC] SmartScreen features in bulk actions
+    [switch]$UserMode,          # only per-user (HKCU) items; no admin needed
     [string]$Csv
 )
 
@@ -63,7 +74,8 @@ function Test-IsAdmin {
     return $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-$Script:IsAdmin = Test-IsAdmin
+$Script:IsAdmin  = Test-IsAdmin
+$Script:UserMode = [bool]$UserMode
 
 # ---------------------------------------------------------------------------
 # Registry helpers
@@ -531,6 +543,15 @@ function Get-Controls {
     return $c
 }
 
+# Restrict to per-user (HKCU, no-admin) items when in user mode.
+function Select-ActiveControls {
+    param($All)
+    if ($Script:UserMode) {
+        return @($All | Where-Object { -not $_.AdminReq })
+    }
+    return $All
+}
+
 # ---------------------------------------------------------------------------
 # Display
 # ---------------------------------------------------------------------------
@@ -549,13 +570,18 @@ function Show-Status {
     Write-Host '==================================================================' -ForegroundColor Cyan
     Write-Host '  Windows 11 Telemetry / Diagnostic Data Status' -ForegroundColor Cyan
     Write-Host ('  Host: {0}   Admin: {1}   {2}' -f $env:COMPUTERNAME, $Script:IsAdmin, (Get-Date)) -ForegroundColor DarkCyan
+    if ($Script:UserMode) {
+        Write-Host '  MODE: USER (per-user HKCU items only; no admin required)' -ForegroundColor Magenta
+    } else {
+        Write-Host '  MODE: FULL (per-user + system-wide items)' -ForegroundColor DarkCyan
+    }
     Write-Host '  Enabled = collecting/on    Disabled = hardened/off' -ForegroundColor DarkCyan
     Write-Host '==================================================================' -ForegroundColor Cyan
     Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '#', 'Setting', 'Category', 'State') -ForegroundColor White
     Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
 
     $i = 0
-    $nEnabled = 0; $nDisabled = 0; $nAbsent = 0; $nSecOff = 0
+    $nEnabled = 0; $nDisabled = 0; $nAbsent = 0; $nSecOff = 0; $nSec = 0; $anyLock = $false
     foreach ($ctrl in $Controls) {
         $i++
         $state = Get-ControlState -Ctrl $ctrl
@@ -564,22 +590,24 @@ function Show-Status {
         elseif ($state -like 'Not present*') { $nAbsent++ }
         $sec = ''
         if ($ctrl.Security) {
-            $sec = ' [SEC]'
+            $sec = ' [SEC]'; $nSec++
             if ($state -like 'Disabled*') { $nSecOff++ }
         }
         $lock  = ''
-        if ($ctrl.AdminReq -and -not $Script:IsAdmin) { $lock = ' *' }
+        if ($ctrl.AdminReq -and -not $Script:IsAdmin) { $lock = ' *'; $anyLock = $true }
         $line = ('{0,-4}{1,-36}{2,-18}' -f $i, ($ctrl.Name + $sec), $ctrl.Category)
         Write-Host $line -NoNewline
         Write-Host ($state + $lock) -ForegroundColor (Get-StateColor $state)
     }
     Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
     Write-Host ('  Summary: {0} enabled, {1} disabled, {2} not present' -f $nEnabled, $nDisabled, $nAbsent) -ForegroundColor White
-    Write-Host '  [SEC] = anti-malware reputation check. Disabling REDUCES protection' -ForegroundColor DarkYellow
+    if ($nSec -gt 0) {
+        Write-Host '  [SEC] = anti-malware reputation check. Disabling REDUCES protection' -ForegroundColor DarkYellow
+    }
     if ($nSecOff -gt 0) {
         Write-Host ('  WARNING: {0} security SmartScreen feature(s) are currently OFF' -f $nSecOff) -ForegroundColor Red
     }
-    if (-not $Script:IsAdmin) {
+    if ($anyLock) {
         Write-Host '  * requires Administrator to change (run elevated)' -ForegroundColor DarkYellow
     }
     Write-Host ''
@@ -653,16 +681,22 @@ function Invoke-AllAction {
 # Interactive menu
 # ---------------------------------------------------------------------------
 function Start-Menu {
-    param($Controls)
+    param($Controls)   # full catalog; the active view is filtered by user mode
     while ($true) {
-        Show-Status -Controls $Controls
+        $view = @(Select-ActiveControls -All $Controls)
+        Show-Status -Controls $view
         Write-Host 'Commands:' -ForegroundColor White
         Write-Host '  <n>          toggle item n (Enable<->Disable)'
         Write-Host '  e <n>        enable item n'
         Write-Host '  d <n>        disable item n'
-        Write-Host '  D            disable ALL (harden; keeps [SEC] SmartScreen ON)'
-        Write-Host '  E            enable ALL (restore Windows default)'
+        Write-Host '  D            disable ALL shown (harden; keeps [SEC] SmartScreen ON)'
+        Write-Host '  E            enable ALL shown (restore Windows default)'
         Write-Host '  S            disable ALL [SEC] SmartScreen features (reduces security)'
+        if ($Script:UserMode) {
+            Write-Host '  m            switch to FULL mode (also show system-wide items)'
+        } else {
+            Write-Host '  m            switch to USER mode (per-user items only, no admin)'
+        }
         Write-Host '  r            refresh view'
         Write-Host '  c <path>     export status to CSV'
         Write-Host '  q            quit'
@@ -675,22 +709,23 @@ function Start-Menu {
         switch -Regex -CaseSensitive ($inp) {
             '^[Qq]$'      { return }
             '^[Rr]$'      { continue }
+            '^[Mm]$'      { $Script:UserMode = -not $Script:UserMode; continue }
             '^D$'         {
-                if ((Read-Host 'Disable ALL telemetry? type YES') -ceq 'YES') {
-                    Invoke-AllAction -Controls $Controls -Action Disable
+                if ((Read-Host 'Disable ALL shown telemetry? type YES') -ceq 'YES') {
+                    Invoke-AllAction -Controls $view -Action Disable
                 }
                 Read-Host 'Press Enter'; continue
             }
             '^E$'         {
-                if ((Read-Host 'Enable ALL (Windows default)? type YES') -ceq 'YES') {
-                    Invoke-AllAction -Controls $Controls -Action Enable
+                if ((Read-Host 'Enable ALL shown (Windows default)? type YES') -ceq 'YES') {
+                    Invoke-AllAction -Controls $view -Action Enable
                 }
                 Read-Host 'Press Enter'; continue
             }
             '^S$'         {
-                $secList = @($Controls | Where-Object { $_.Security })
+                $secList = @($view | Where-Object { $_.Security })
                 if ($secList.Count -eq 0) {
-                    Write-Host 'No [SEC] controls in the catalog.' -ForegroundColor DarkYellow
+                    Write-Host 'No [SEC] controls shown (they are system-wide; switch to FULL mode with "m").' -ForegroundColor DarkYellow
                     Read-Host 'Press Enter'; continue
                 }
                 Write-Host ''
@@ -703,32 +738,32 @@ function Start-Menu {
                 Read-Host 'Press Enter'; continue
             }
             '^[Cc]\s+(.+)$' {
-                Export-StatusCsv -Controls $Controls -Path $Matches[1].Trim('"')
+                Export-StatusCsv -Controls $view -Path $Matches[1].Trim('"')
                 Read-Host 'Press Enter'; continue
             }
             '^[Ee]\s+(\d+)$' {
                 $n = [int]$Matches[1]
-                if ($n -ge 1 -and $n -le $Controls.Count) { Invoke-ControlAction -Ctrl $Controls[$n-1] -Action Enable }
+                if ($n -ge 1 -and $n -le $view.Count) { Invoke-ControlAction -Ctrl $view[$n-1] -Action Enable }
                 else { Write-Host 'Out of range' -ForegroundColor Red }
                 Read-Host 'Press Enter'; continue
             }
             '^[Dd]\s+(\d+)$' {
                 $n = [int]$Matches[1]
-                if ($n -ge 1 -and $n -le $Controls.Count) { Invoke-ControlAction -Ctrl $Controls[$n-1] -Action Disable }
+                if ($n -ge 1 -and $n -le $view.Count) { Invoke-ControlAction -Ctrl $view[$n-1] -Action Disable }
                 else { Write-Host 'Out of range' -ForegroundColor Red }
                 Read-Host 'Press Enter'; continue
             }
             '^\d+$' {
                 $n = [int]$inp
-                if ($n -ge 1 -and $n -le $Controls.Count) {
-                    $ctrl  = $Controls[$n-1]
+                if ($n -ge 1 -and $n -le $view.Count) {
+                    $ctrl  = $view[$n-1]
                     $state = Get-ControlState -Ctrl $ctrl
                     if ($state -like 'Enabled*') { Invoke-ControlAction -Ctrl $ctrl -Action Disable }
                     else                         { Invoke-ControlAction -Ctrl $ctrl -Action Enable }
                 } else { Write-Host 'Out of range' -ForegroundColor Red }
                 Read-Host 'Press Enter'; continue
             }
-            default { Write-Host 'Unknown command (d/e need an item number; D/E/S alone act on ALL)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
+            default { Write-Host 'Unknown command (d/e need an item number; D/E/S/m act on the view)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
         }
     }
 }
@@ -737,34 +772,43 @@ function Start-Menu {
 # Main
 # ---------------------------------------------------------------------------
 $controls = Get-Controls
+$active   = @(Select-ActiveControls -All $controls)
 
 if ($IncludeSecurity -and -not $DisableAll) {
     Write-Host 'NOTE: -IncludeSecurity only has an effect together with -DisableAll; ignoring it.' -ForegroundColor DarkYellow
 }
+if ($UserMode) {
+    Write-Host ('USER MODE: showing {0} per-user item(s) only (no admin needed).' -f $active.Count) -ForegroundColor Magenta
+}
 
 if ($DisableAll) {
-    Invoke-AllAction -Controls $controls -Action Disable -WithSecurity:$IncludeSecurity
-    Show-Status -Controls $controls
-    if ($Csv) { Export-StatusCsv -Controls $controls -Path $Csv }
+    Invoke-AllAction -Controls $active -Action Disable -WithSecurity:$IncludeSecurity
+    Show-Status -Controls $active
+    if ($Csv) { Export-StatusCsv -Controls $active -Path $Csv }
     return
 }
 if ($EnableAll) {
-    Invoke-AllAction -Controls $controls -Action Enable
-    Show-Status -Controls $controls
-    if ($Csv) { Export-StatusCsv -Controls $controls -Path $Csv }
+    Invoke-AllAction -Controls $active -Action Enable
+    Show-Status -Controls $active
+    if ($Csv) { Export-StatusCsv -Controls $active -Path $Csv }
     return
 }
 if ($Report -or $Csv) {
-    if ($Report) { Show-Status -Controls $controls }
-    if ($Csv)    { Export-StatusCsv -Controls $controls -Path $Csv }
+    if ($Report) { Show-Status -Controls $active }
+    if ($Csv)    { Export-StatusCsv -Controls $active -Path $Csv }
     return
 }
 
-if (-not $Script:IsAdmin) {
+if ($UserMode) {
+    Write-Host ''
+    Write-Host 'USER MODE is on: changes apply to YOUR account only and need no' -ForegroundColor Magenta
+    Write-Host 'elevation. Press "m" in the menu to include system-wide items.' -ForegroundColor Magenta
+} elseif (-not $Script:IsAdmin) {
     Write-Host ''
     Write-Host 'NOTE: Not running as Administrator. HKLM / service / task items' -ForegroundColor DarkYellow
-    Write-Host '      will show as read-only (*) and cannot be changed until you' -ForegroundColor DarkYellow
-    Write-Host '      relaunch this script in an elevated PowerShell window.' -ForegroundColor DarkYellow
+    Write-Host '      show as read-only (*). Use -UserMode (or "m") to work with' -ForegroundColor DarkYellow
+    Write-Host '      per-user items only, or relaunch elevated for the rest.' -ForegroundColor DarkYellow
 }
 
+# Start-Menu always receives the full catalog; user mode filters the view.
 Start-Menu -Controls $controls
