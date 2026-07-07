@@ -7,8 +7,9 @@ Two single-file, dependency-free PowerShell 5.1 scripts:
 | `Manage-WindowsTelemetry.ps1` | Windows 11 telemetry / diagnostic-data settings, services and scheduled tasks |
 | `Manage-BrowserPrivacy.ps1` | Privacy / telemetry policies for Edge, Chrome, Firefox and Brave |
 | `Manage-DefenderAntivirus.ps1` | Microsoft Defender Antivirus health, protection settings, scans and updates |
+| `View-WindowsIdentifiers.ps1` | **Read-only** audit of the machine/user/hardware identifiers Windows exposes |
 
-All three share the same UX: a color-coded status view, interactive per-item
+The first three share the same UX: a color-coded status view, interactive per-item
 toggling, `-Report`, and CSV export. They are ASCII-only, BOM-free, and run
 in stock `powershell.exe` on Windows 11.
 
@@ -661,6 +662,63 @@ or restored wholesale with `E` / `-EnableRecommended`.
 
 ---
 
+# 4. View-WindowsIdentifiers.ps1
+
+A **read-only** privacy audit that enumerates the unique identifiers Windows,
+your account and the hardware expose about this machine - the values that can
+fingerprint or correlate the device. It changes nothing; it only reports.
+
+## Quick start
+
+```powershell
+# Masked report (safe to screenshot/share)
+.\View-WindowsIdentifiers.ps1
+
+# Full values - e.g. to back up your own product key (CONFIDENTIAL output)
+.\View-WindowsIdentifiers.ps1 -Reveal
+
+# Export (respects masking unless -Reveal is also passed)
+.\View-WindowsIdentifiers.ps1 -Csv .\ids.csv
+.\View-WindowsIdentifiers.ps1 -Reveal -Json .\ids.json
+```
+
+## Masking
+
+Because the output includes sensitive data, sensitive values are **masked by
+default** (`MODE: MASKED`) - the report is safe to share. Pass **`-Reveal`**
+to print full values (`MODE: REVEAL`, shown in red); the CSV/JSON export
+mirrors whichever mode you ran. Sensitive rows are marked with `!`. Product
+keys keep their first and last group (`AAAAA-XXXXX-XXXXX-XXXXX-EEEEE`); other
+IDs keep their first few characters.
+
+## What it reports
+
+| Category | Identifiers |
+|---|---|
+| **Machine** | Computer name, `MachineGuid` (Cryptography), **Product ID ("PUID")**, Build GUID, install date, SMBIOS UUID, system IdentifyingNumber |
+| **Activation** | Windows edition, license status/channel/description, **partial product key**, **OEM firmware key (OA3)**, **decoded installed product key** (from `DigitalProductId`) |
+| **Telemetry** | SQM Machine ID, SQM User ID, DiagTrack Client ID |
+| **User** | User name, **user SID**, Advertising ID + enabled flag |
+| **Hardware** | BIOS serial, baseboard serial, CPU ProcessorId, per-disk serials, TPM presence/manufacturer |
+| **Network** | Per-adapter MAC addresses (physical adapters) |
+
+Notes:
+
+- **Read-only.** No registry, service or setting is modified.
+- **Admin-gated values:** the OEM firmware key (`OA3xOriginalProductKey`) and
+  TPM data need Administrator; without it they show `(needs admin)`.
+- **Volume/MAK licenses** do not store a recoverable key in `DigitalProductId`,
+  so the decoded key honestly reports `(unavailable - volume/MAK license)`
+  rather than a bogus value. Retail/OEM installs decode to a real key.
+- Every row lists its **Source** (registry path or WMI class) in the CSV/JSON
+  so you can verify exactly where each value came from.
+
+## CSV / JSON output columns
+
+`Category, Name, Value, Sensitive, Source`
+
+---
+
 # Files
 
 | File | Purpose |
@@ -668,6 +726,7 @@ or restored wholesale with `E` / `-EnableRecommended`.
 | `Manage-WindowsTelemetry.ps1` | Windows telemetry view + control |
 | `Manage-BrowserPrivacy.ps1` | Browser privacy view + hardening |
 | `Manage-DefenderAntivirus.ps1` | Defender health + protection management |
+| `View-WindowsIdentifiers.ps1` | Read-only identifier privacy audit |
 | `README.md` | This file |
 
 All CSV exports are useful for fleet auditing: run with `-Csv` on multiple
