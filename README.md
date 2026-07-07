@@ -80,6 +80,9 @@ services and scheduled tasks** from one place.
 # ... also disable the SmartScreen reputation checks (see [SEC] note below)
 .\Manage-WindowsTelemetry.ps1 -DisableAll -IncludeSecurity
 
+# GO DARK - maximum privacy: everything incl [SEC] security + [NET] callbacks
+.\Manage-WindowsTelemetry.ps1 -GoDark
+
 # Restore Windows default behaviour: turn everything back ON
 .\Manage-WindowsTelemetry.ps1 -EnableAll
 
@@ -154,8 +157,57 @@ The header shows `MODE: USER` or `MODE: FULL`. In the interactive menu press
 | `<n>` | Toggle item *n* (Enabled <-> Disabled) |
 | `e <n>` / `d <n>` | Enable / disable item *n* |
 | `E` / `D` (uppercase) | Enable / disable **ALL** shown items (asks for `YES` confirmation; `D` keeps `[SEC]` items ON) |
-| `S` | Disable the `[SEC]` SmartScreen features (requires typing `DISABLE-SECURITY`) |
+| `S` | Disable the `[SEC]` SmartScreen/Defender-cloud features (requires typing `DISABLE-SECURITY`) |
+| `G` | **GO DARK** - disable everything incl `[SEC]` + `[NET]` (requires typing `GO-DARK`) |
+| `X` | Close `[CRIT]` items (Windows Update / Time) one-by-one, each with a `CLOSE` confirm |
 | `m` | Toggle between USER mode (per-user only) and FULL mode (all items) |
+
+## Go dark (`-GoDark` / menu `G`) - maximum privacy
+
+Ordinary `-DisableAll` deliberately leaves two classes of item **on**, because
+turning them off has real costs:
+
+- **`[SEC]`** - anti-malware reputation checks: Windows SmartScreen (apps/files,
+  Store, phishing) and Defender cloud (MAPS + sample submission). Off = no
+  malicious-URL/app warnings and weaker AV.
+- **`[NET]`** - ambient Microsoft callbacks: NCSI connectivity probe, root-cert
+  auto-update, Store app auto-update, font streaming, Media DRM online. Off can
+  break captive-portal detection, new-CA trust, app updates and some fonts/DRM.
+
+**Go dark disables all of it** - all telemetry **plus** every `[SEC]` and
+`[NET]` item - for the smallest practical Microsoft footprint. It requires an
+explicit switch/confirmation (`GO-DARK`) and is fully reversible with
+`-EnableAll` (menu `E`).
+
+## `[CRIT]` - the last-mile connections (confirm-close only)
+
+Even go-dark won't touch these, because disabling them breaks core function.
+They exist as **local-config stand-ins** for what a hardened environment does
+properly (WSUS, a local NTP server, network isolation). Each is **never**
+bulk-disabled - not by `-DisableAll` and not by `-GoDark` - and can only be
+closed **individually, with a per-item `CLOSE` confirmation**:
+
+| `[CRIT]` item | Key/service | Cost of closing | Proper alternative |
+|---|---|---|---|
+| **Windows Update Auto** | `...\WindowsUpdate\AU\NoAutoUpdate=1` | No automatic security patching | WSUS / managed updates |
+| **Windows Time Sync** | `W32Time` service disabled | Clock drift breaks Kerberos/TLS | Internal NTP time server |
+
+Close them from the menu with **`X`** (walks each with a confirm) or by
+toggling the item's number (a `[CRIT]` disable always prompts `CLOSE`). Reverse
+with `-EnableAll` / menu `E`, which restores auto-update and sets `W32Time`
+back to its default (Manual) start.
+
+**Activation** and **certificate revocation (OCSP/CRL)** are *not* included:
+there is no clean single-key local toggle for them (disabling activation
+de-activates Windows; blanket revocation-off is dangerous and messy). In a
+locked-down build those are handled by **network isolation / firewall**, which
+is the right layer for them - a point you already make with WSUS + isolation +
+a time server.
+
+Some `[SEC]` Defender items may be blocked by **Tamper Protection** (they'll
+report a failure rather than silently not applying) - turn it off in Windows
+Security first if you truly need them off. For the network callbacks that a
+registry setting cannot stop, pair go-dark with host-firewall rules.
 | `r` | Refresh the view |
 | `c <path>` | Export status to CSV |
 | `q` | Quit |

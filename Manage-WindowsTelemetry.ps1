@@ -42,8 +42,9 @@
         .\Manage-WindowsTelemetry.ps1 -UserMode       # per-user items only, no admin
         .\Manage-WindowsTelemetry.ps1 -UserMode -DisableAll   # harden your user profile
         .\Manage-WindowsTelemetry.ps1 -Report         # print status and exit
-        .\Manage-WindowsTelemetry.ps1 -DisableAll     # turn telemetry OFF (keeps [SEC] ON)
+        .\Manage-WindowsTelemetry.ps1 -DisableAll     # turn telemetry OFF (keeps [SEC]/[NET] ON)
         .\Manage-WindowsTelemetry.ps1 -DisableAll -IncludeSecurity  # also disable SmartScreen
+        .\Manage-WindowsTelemetry.ps1 -GoDark         # MAX: disable everything incl [SEC]+[NET]
         .\Manage-WindowsTelemetry.ps1 -EnableAll      # restore Windows default ON
         .\Manage-WindowsTelemetry.ps1 -Csv .\out.csv  # export status and exit
         .\Manage-WindowsTelemetry.ps1 -Report -Csv .\status.csv
@@ -58,6 +59,7 @@ param(
     [switch]$DisableAll,
     [switch]$EnableAll,
     [switch]$IncludeSecurity,   # also disable [SEC] SmartScreen features in bulk actions
+    [switch]$GoDark,            # maximum: disable EVERYTHING incl [SEC] and [NET] callbacks
     [switch]$UserMode,          # only per-user (HKCU) items; no admin needed
     [string]$Csv
 )
@@ -127,7 +129,9 @@ function New-RegControl {
         [ValidateSet('On','Off')][string]$Default = 'On',
         [string]$RegType = 'DWord', [string]$Note = '',
         [switch]$RemoveOnEnable,
-        [switch]$Security   # marks a control whose "Disabled" state REDUCES protection
+        [switch]$Security,  # marks a control whose "Disabled" state REDUCES protection
+        [switch]$GoDark,    # ambient MS callback; only disabled by -GoDark or individually
+        [switch]$Critical   # breaks important functionality; per-item "confirm close" required
     )
     [pscustomobject]@{
         Type           = 'Reg'
@@ -142,6 +146,8 @@ function New-RegControl {
         RegType        = $RegType
         RemoveOnEnable = [bool]$RemoveOnEnable
         Security       = [bool]$Security
+        GoDark         = [bool]$GoDark
+        Critical       = [bool]$Critical
         AdminReq       = ($Hive -eq 'HKLM')
     }
 }
@@ -150,16 +156,19 @@ function New-ServiceControl {
     param(
         [string]$Name, [string]$ServiceName,
         [ValidateSet('Automatic','Manual')][string]$DefaultStartupType = 'Automatic',
-        [string]$Note = ''
+        [string]$Note = '', [string]$Category = 'Service',
+        [switch]$Critical
     )
     [pscustomobject]@{
         Type               = 'Service'
         Name               = $Name
-        Category           = 'Service'
+        Category           = $Category
         Note               = $Note
         ServiceName        = $ServiceName
         DefaultStartupType = $DefaultStartupType
         Security           = $false
+        GoDark             = $false
+        Critical           = [bool]$Critical
         AdminReq           = $true
     }
 }
@@ -174,6 +183,8 @@ function New-TaskControl {
         Note     = $Note
         Tasks    = $Tasks
         Security = $false
+        GoDark   = $false
+        Critical = $false
         AdminReq = $true
     }
 }
@@ -501,6 +512,55 @@ function Get-Controls {
         -ValueName 'ServiceEnabled' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable -Security `
         -Note 'SECURITY: Win11 password/phishing protection service') )
 
+    # --- Defender cloud (MAPS) - SECURITY, off reduces AV (Tamper Protection may block) ---
+    [void]$c.Add( (New-RegControl -Name 'Defender Cloud (MAPS)' -Category 'Defender Cloud' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows Defender\Spynet' `
+        -ValueName 'SpynetReporting' -OnValue 2 -OffValue 0 -Default On -RemoveOnEnable -Security `
+        -Note 'SECURITY: real-time cloud lookups. Tamper Protection may block changes.') )
+
+    [void]$c.Add( (New-RegControl -Name 'Defender Sample Submission' -Category 'Defender Cloud' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows Defender\Spynet' `
+        -ValueName 'SubmitSamplesConsent' -OnValue 1 -OffValue 2 -Default On -RemoveOnEnable -Security `
+        -Note 'SECURITY/PRIVACY: sends files to Microsoft. Tamper Protection may block changes.') )
+
+    # --- Ambient Microsoft callbacks ([NET]) - functional connections, go-dark only ---
+    [void]$c.Add( (New-RegControl -Name 'NCSI Active Probe' -Category 'Connectivity' `
+        -Hive HKLM -Path 'SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet' `
+        -ValueName 'EnableActiveProbing' -OnValue 1 -OffValue 0 -Default On -GoDark `
+        -Note 'Probes msftconnecttest.com. Off breaks captive-portal / internet indicator.') )
+
+    [void]$c.Add( (New-RegControl -Name 'Root Certificate Auto-Update' -Category 'Connectivity' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot' `
+        -ValueName 'DisableRootAutoUpdate' -OnValue 0 -OffValue 1 -Default On -RemoveOnEnable -GoDark `
+        -Note 'Off stops new/rotated trusted-root CAs downloading - can break HTTPS over time.') )
+
+    [void]$c.Add( (New-RegControl -Name 'Store App Auto-Update' -Category 'Connectivity' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\WindowsStore' `
+        -ValueName 'AutoDownload' -OnValue 4 -OffValue 2 -Default On -RemoveOnEnable -GoDark `
+        -Note 'Off stops Store apps auto-updating (including their security fixes).') )
+
+    [void]$c.Add( (New-RegControl -Name 'Font Streaming' -Category 'Connectivity' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\System' `
+        -ValueName 'EnableFontProviders' -OnValue 1 -OffValue 0 -Default On -RemoveOnEnable -GoDark `
+        -Note 'Off stops on-demand font downloads from Microsoft.') )
+
+    [void]$c.Add( (New-RegControl -Name 'Windows Media DRM Online' -Category 'Connectivity' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\WMDRM' `
+        -ValueName 'DisableOnline' -OnValue 0 -OffValue 1 -Default On -RemoveOnEnable -GoDark `
+        -Note 'Off stops Media DRM contacting Microsoft for licenses/individualization.') )
+
+    # --- Critical ([CRIT]) - breaks important functionality; per-item confirm-close ---
+    # NOT touched by any bulk action (not even -GoDark). Local-config stand-ins for
+    # what a hardened env does with WSUS / a local NTP server / network isolation.
+    [void]$c.Add( (New-RegControl -Name 'Windows Update Auto' -Category 'Critical' `
+        -Hive HKLM -Path 'SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' `
+        -ValueName 'NoAutoUpdate' -OnValue 0 -OffValue 1 -Default On -RemoveOnEnable -Critical `
+        -Note 'BREAKS SECURITY PATCHING. Off = no automatic update check/download. Use WSUS instead.') )
+
+    [void]$c.Add( (New-ServiceControl -Name 'Windows Time Sync (W32Time)' -Category 'Critical' `
+        -ServiceName 'W32Time' -DefaultStartupType Manual -Critical `
+        -Note 'BREAKS time sync (Kerberos/TLS drift). Off = no NTP to time.windows.com. Use a local time server.') )
+
     # --- Services ---
     [void]$c.Add( (New-ServiceControl -Name 'Connected User Experiences' `
         -ServiceName 'DiagTrack' -DefaultStartupType Automatic `
@@ -581,7 +641,7 @@ function Show-Status {
     Write-Host ('{0,-4}{1,-36}{2,-18}{3}' -f '---', '-------', '--------', '-----') -ForegroundColor DarkGray
 
     $i = 0
-    $nEnabled = 0; $nDisabled = 0; $nAbsent = 0; $nSecOff = 0; $nSec = 0; $anyLock = $false
+    $nEnabled = 0; $nDisabled = 0; $nAbsent = 0; $nSecOff = 0; $nSec = 0; $nNet = 0; $nCrit = 0; $anyLock = $false
     foreach ($ctrl in $Controls) {
         $i++
         $state = Get-ControlState -Ctrl $ctrl
@@ -592,6 +652,10 @@ function Show-Status {
         if ($ctrl.Security) {
             $sec = ' [SEC]'; $nSec++
             if ($state -like 'Disabled*') { $nSecOff++ }
+        } elseif ($ctrl.Critical) {
+            $sec = ' [CRIT]'; $nCrit++
+        } elseif ($ctrl.GoDark) {
+            $sec = ' [NET]'; $nNet++
         }
         $lock  = ''
         if ($ctrl.AdminReq -and -not $Script:IsAdmin) { $lock = ' *'; $anyLock = $true }
@@ -603,6 +667,12 @@ function Show-Status {
     Write-Host ('  Summary: {0} enabled, {1} disabled, {2} not present' -f $nEnabled, $nDisabled, $nAbsent) -ForegroundColor White
     if ($nSec -gt 0) {
         Write-Host '  [SEC] = anti-malware reputation check. Disabling REDUCES protection' -ForegroundColor DarkYellow
+    }
+    if ($nNet -gt 0) {
+        Write-Host '  [NET] = ambient Microsoft callback. Disabling can break functionality' -ForegroundColor DarkYellow
+    }
+    if ($nCrit -gt 0) {
+        Write-Host '  [CRIT] = breaks patching/time/trust. Never bulk-disabled; needs per-item confirm (X)' -ForegroundColor DarkYellow
     }
     if ($nSecOff -gt 0) {
         Write-Host ('  WARNING: {0} security SmartScreen feature(s) are currently OFF' -f $nSecOff) -ForegroundColor Red
@@ -653,26 +723,48 @@ function Invoke-ControlAction {
     }
 }
 
+function Invoke-ConfirmClose {
+    param($Ctrl)   # per-item "confirm close" for [CRIT] items
+    Write-Host ''
+    Write-Host ('CONFIRM CLOSE: {0}' -f $Ctrl.Name) -ForegroundColor Red
+    if ($Ctrl.Note) { Write-Host ('  {0}' -f $Ctrl.Note) -ForegroundColor DarkYellow }
+    Write-Host '  Local-config only - a hardened env would use WSUS / local NTP / network isolation.' -ForegroundColor DarkYellow
+    if ((Read-Host ('Close this? type CLOSE')) -ceq 'CLOSE') {
+        Invoke-ControlAction -Ctrl $Ctrl -Action Disable
+    } else {
+        Write-Host '  Skipped.' -ForegroundColor DarkGray
+    }
+}
+
 function Invoke-AllAction {
     param(
         $Controls,
         [ValidateSet('Enable','Disable')][string]$Action,
-        [switch]$WithSecurity   # when disabling, also include [SEC] SmartScreen features
+        [switch]$WithSecurity,  # when disabling, also include [SEC] SmartScreen/Defender features
+        [switch]$WithGoDark     # when disabling, also include [NET] ambient callbacks
     )
     $verb = if ($Action -eq 'Enable') { 'ENABLE (restore Windows default)' } else { 'DISABLE (harden)' }
     Write-Host ''
     Write-Host ("Applying {0} to ALL items..." -f $verb) -ForegroundColor Cyan
-    $skippedSec = 0
+    $skippedSec = 0; $skippedNet = 0; $skippedCrit = 0
     foreach ($ctrl in $Controls) {
-        # Never auto-disable SmartScreen reputation checks in bulk unless explicitly requested.
-        if ($Action -eq 'Disable' -and $ctrl.Security -and -not $WithSecurity) {
-            $skippedSec++
-            continue
+        if ($Action -eq 'Disable') {
+            # [CRIT] items are NEVER bulk-disabled (not even by go-dark) - confirm-close only.
+            if ($ctrl.Critical) { $skippedCrit++; continue }
+            # Never auto-disable security or ambient-callback items in bulk unless asked.
+            if ($ctrl.Security -and -not $WithSecurity) { $skippedSec++; continue }
+            if ($ctrl.GoDark   -and -not $WithGoDark)   { $skippedNet++; continue }
         }
         Invoke-ControlAction -Ctrl $ctrl -Action $Action
     }
     if ($skippedSec -gt 0) {
-        Write-Host ('  Kept {0} [SEC] SmartScreen feature(s) ON (use -IncludeSecurity / menu "S" to disable).' -f $skippedSec) -ForegroundColor DarkYellow
+        Write-Host ('  Kept {0} [SEC] security feature(s) ON (use -IncludeSecurity / menu "S", or -GoDark).' -f $skippedSec) -ForegroundColor DarkYellow
+    }
+    if ($skippedNet -gt 0) {
+        Write-Host ('  Kept {0} [NET] ambient callback(s) ON (use -GoDark / menu "G").' -f $skippedNet) -ForegroundColor DarkYellow
+    }
+    if ($skippedCrit -gt 0) {
+        Write-Host ('  Kept {0} [CRIT] item(s) ON - close individually with confirm (menu "X").' -f $skippedCrit) -ForegroundColor DarkYellow
     }
     Write-Host ''
 }
@@ -692,6 +784,8 @@ function Start-Menu {
         Write-Host '  D            disable ALL shown (harden; keeps [SEC] SmartScreen ON)'
         Write-Host '  E            enable ALL shown (restore Windows default)'
         Write-Host '  S            disable ALL [SEC] SmartScreen features (reduces security)'
+        Write-Host '  G            GO DARK - disable EVERYTHING incl [SEC] + [NET] (max privacy)'
+        Write-Host '  X            close [CRIT] items (Update/Time) one-by-one with confirm'
         if ($Script:UserMode) {
             Write-Host '  m            switch to FULL mode (also show system-wide items)'
         } else {
@@ -737,6 +831,21 @@ function Start-Menu {
                 }
                 Read-Host 'Press Enter'; continue
             }
+            '^G$'         {
+                Write-Host ''
+                Write-Host '============================  GO DARK  ============================' -ForegroundColor Red
+                Write-Host 'Disables EVERYTHING shown: telemetry + [SEC] anti-malware reputation' -ForegroundColor Red
+                Write-Host '(SmartScreen, Defender cloud) + [NET] ambient callbacks (connectivity' -ForegroundColor Red
+                Write-Host 'probe, root-cert auto-update, Store updates, font/DRM). This REDUCES' -ForegroundColor Red
+                Write-Host 'SECURITY and can BREAK functionality. Windows Update, activation,' -ForegroundColor Red
+                Write-Host 'cert revocation and time sync are intentionally left working.' -ForegroundColor Red
+                Write-Host 'Reverse anytime with E (enable all).' -ForegroundColor DarkYellow
+                Write-Host '==================================================================' -ForegroundColor Red
+                if ((Read-Host 'Proceed? type GO-DARK') -ceq 'GO-DARK') {
+                    Invoke-AllAction -Controls $view -Action Disable -WithSecurity -WithGoDark
+                }
+                Read-Host 'Press Enter'; continue
+            }
             '^[Cc]\s+(.+)$' {
                 Export-StatusCsv -Controls $view -Path $Matches[1].Trim('"')
                 Read-Host 'Press Enter'; continue
@@ -749,8 +858,22 @@ function Start-Menu {
             }
             '^[Dd]\s+(\d+)$' {
                 $n = [int]$Matches[1]
-                if ($n -ge 1 -and $n -le $view.Count) { Invoke-ControlAction -Ctrl $view[$n-1] -Action Disable }
-                else { Write-Host 'Out of range' -ForegroundColor Red }
+                if ($n -ge 1 -and $n -le $view.Count) {
+                    $ctrl = $view[$n-1]
+                    if ($ctrl.Critical) { Invoke-ConfirmClose -Ctrl $ctrl } else { Invoke-ControlAction -Ctrl $ctrl -Action Disable }
+                } else { Write-Host 'Out of range' -ForegroundColor Red }
+                Read-Host 'Press Enter'; continue
+            }
+            '^X$'         {
+                $critList = @($view | Where-Object { $_.Critical })
+                if ($critList.Count -eq 0) {
+                    Write-Host 'No [CRIT] items shown.' -ForegroundColor DarkYellow
+                    Read-Host 'Press Enter'; continue
+                }
+                Write-Host ''
+                Write-Host ('Closing {0} [CRIT] connection(s), one at a time with confirmation.' -f $critList.Count) -ForegroundColor Red
+                Write-Host 'These break patching / time sync / trust. Reverse with E (enable all).' -ForegroundColor DarkYellow
+                foreach ($ctrl in $critList) { Invoke-ConfirmClose -Ctrl $ctrl }
                 Read-Host 'Press Enter'; continue
             }
             '^\d+$' {
@@ -758,12 +881,13 @@ function Start-Menu {
                 if ($n -ge 1 -and $n -le $view.Count) {
                     $ctrl  = $view[$n-1]
                     $state = Get-ControlState -Ctrl $ctrl
-                    if ($state -like 'Enabled*') { Invoke-ControlAction -Ctrl $ctrl -Action Disable }
-                    else                         { Invoke-ControlAction -Ctrl $ctrl -Action Enable }
+                    if ($state -like 'Enabled*') {
+                        if ($ctrl.Critical) { Invoke-ConfirmClose -Ctrl $ctrl } else { Invoke-ControlAction -Ctrl $ctrl -Action Disable }
+                    } else { Invoke-ControlAction -Ctrl $ctrl -Action Enable }
                 } else { Write-Host 'Out of range' -ForegroundColor Red }
                 Read-Host 'Press Enter'; continue
             }
-            default { Write-Host 'Unknown command (d/e need an item number; D/E/S/m act on the view)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
+            default { Write-Host 'Unknown command (d/e need an item number; D/E/S/G/X/m act on the view)' -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
         }
     }
 }
@@ -781,6 +905,15 @@ if ($UserMode) {
     Write-Host ('USER MODE: showing {0} per-user item(s) only (no admin needed).' -f $active.Count) -ForegroundColor Magenta
 }
 
+if ($GoDark) {
+    Write-Host ''
+    Write-Host 'GO DARK: disabling ALL telemetry + [SEC] security + [NET] ambient callbacks.' -ForegroundColor Red
+    Write-Host 'Reduces security and can break functionality. Reverse with -EnableAll.' -ForegroundColor DarkYellow
+    Invoke-AllAction -Controls $active -Action Disable -WithSecurity -WithGoDark
+    Show-Status -Controls $active
+    if ($Csv) { Export-StatusCsv -Controls $active -Path $Csv }
+    return
+}
 if ($DisableAll) {
     Invoke-AllAction -Controls $active -Action Disable -WithSecurity:$IncludeSecurity
     Show-Status -Controls $active

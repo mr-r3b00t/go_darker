@@ -125,11 +125,56 @@ function Get-DsRegStatus {
 # identifier baked into the TPM at manufacture. Needs admin. Uses the built-in
 # Get-TpmEndorsementKeyInfo cmdlet; returns the EKpub hash and (if RSA) the
 # modulus so the actual public key can be recorded.
+# Minimal ASN.1/DER walker: collects every INTEGER value in the blob, descending
+# into SEQUENCEs and BIT STRINGs. Used to pull the RSA modulus (the longest
+# INTEGER) out of the EKpub without relying on .NET Core-only import APIs.
+function Invoke-Asn1Walk {
+    param([byte[]]$d, [int]$s, [int]$e, [int]$depth = 0)
+    if ($depth -gt 24) { return }
+    $i = $s
+    while ($i -lt $e) {
+        $tag = $d[$i]; $i++
+        if ($i -ge $e) { break }
+        $b = $d[$i]; $i++
+        if ($b -lt 0x80) { $len = $b } else {
+            $n = $b -band 0x7f
+            if ($n -eq 0 -or ($i + $n) -gt $e) { break }
+            $len = 0; for ($k = 0; $k -lt $n; $k++) { $len = ($len * 256) + $d[$i]; $i++ }
+        }
+        if (($i + $len) -gt $e) { break }
+        if ($tag -eq 0x02) { [void]$Script:Asn1Ints.Add([byte[]]($d[$i..($i + $len - 1)])) }
+        elseif ($tag -eq 0x03) { if ($len -gt 1) { Invoke-Asn1Walk $d ($i + 1) ($i + $len) ($depth + 1) } }
+        elseif (($tag -band 0x20) -ne 0) { Invoke-Asn1Walk $d $i ($i + $len) ($depth + 1) }
+        $i += $len
+    }
+}
+
+function Get-RsaModulus {
+    param([byte[]]$Der)
+    $Script:Asn1Ints = New-Object System.Collections.ArrayList
+    try { Invoke-Asn1Walk -d $Der -s 0 -e $Der.Length } catch { }
+    $best = $null
+    foreach ($b in $Script:Asn1Ints) { if ($null -eq $best -or $b.Length -gt $best.Length) { $best = $b } }
+    if ($null -eq $best -or $best.Length -lt 128) { return $null }   # <1024-bit => not an RSA modulus (e.g. ECC EK)
+    if ($best.Length -gt 1 -and $best[0] -eq 0) { $best = $best[1..($best.Length - 1)] }  # strip DER sign byte
+    return [byte[]]$best
+}
+
+function Get-Sha {
+    param([byte[]]$Bytes, [ValidateSet('SHA1','SHA256')][string]$Algo = 'SHA256')
+    $h = $null
+    try {
+        $h = [System.Security.Cryptography.HashAlgorithm]::Create($Algo)
+        $hb = $h.ComputeHash($Bytes)
+        return (-join ($hb | ForEach-Object { $_.ToString('x2') }))
+    } finally { if ($h) { $h.Dispose() } }
+}
+
 function Get-TpmEkPub {
     # Windows exposes PublicKey as AsnEncodedData (DER SubjectPublicKeyInfo) and
     # often leaves PublicKeyHash empty - so we base64 the DER (the actual EKpub)
     # and compute the SHA-256 ourselves as a stable fingerprint.
-    $info = [pscustomobject]@{ Available = $false; Present = $false; WinHash = $null; Sha256 = $null; DerB64 = $null }
+    $info = [pscustomobject]@{ Available = $false; Present = $false; WinHash = $null; Sha256 = $null; Sha1 = $null; ModSha256 = $null; DerB64 = $null }
     if (-not (Get-Command Get-TpmEndorsementKeyInfo -ErrorAction SilentlyContinue)) { return $info }
     $info.Available = $true
     try {
@@ -142,12 +187,10 @@ function Get-TpmEkPub {
         if ($raw -and $raw.Length -gt 0) {
             $bytes = [byte[]]$raw
             $info.DerB64 = [Convert]::ToBase64String($bytes)
-            $sha = $null
-            try {
-                $sha = [System.Security.Cryptography.SHA256]::Create()
-                $hb  = $sha.ComputeHash($bytes)
-                $info.Sha256 = -join ($hb | ForEach-Object { $_.ToString('x2') })
-            } finally { if ($sha) { $sha.Dispose() } }
+            $info.Sha256 = Get-Sha -Bytes $bytes -Algo SHA256   # hash of the DER SubjectPublicKeyInfo
+            $info.Sha1   = Get-Sha -Bytes $bytes -Algo SHA1
+            $mod = Get-RsaModulus -Der $bytes                   # raw RSA modulus (null for ECC EKs)
+            if ($mod) { $info.ModSha256 = Get-Sha -Bytes $mod -Algo SHA256 }
         }
     } catch { }
     return $info
@@ -188,18 +231,28 @@ function Get-DeviceIdentityAsSystem {
     $taskName = "WID_DeviceExtract_$PID"
     $payload = @"
 `$ErrorActionPreference='SilentlyContinue'
-`$out=@()
-`$base='HKCU:\SOFTWARE\Microsoft\IdentityCRL\UserExtendedProperties'
-if(Test-Path `$base){
-  foreach(`$k in (Get-ChildItem `$base)){
-    `$cid=(Get-ItemProperty -LiteralPath `$k.PSPath).cid
-    if(`$cid){
-      `$puid=`$null; try{`$puid=([Convert]::ToUInt64(`$cid,16)).ToString()}catch{}
-      `$out+=[pscustomobject]@{Account=(Split-Path `$k.Name -Leaf);Cid=`$cid;Puid=`$puid}
+`$found=@{}
+`$roots=@('HKCU:\SOFTWARE\Microsoft\IdentityCRL','HKLM:\SOFTWARE\Microsoft\IdentityStore\Cache\S-1-5-18')
+foreach(`$root in `$roots){
+  if(Test-Path `$root){
+    `$keys=@(Get-Item `$root -ErrorAction SilentlyContinue) + @(Get-ChildItem `$root -Recurse -ErrorAction SilentlyContinue)
+    foreach(`$k in `$keys){
+      `$props=Get-ItemProperty -LiteralPath `$k.PSPath -ErrorAction SilentlyContinue
+      if(`$props){
+        foreach(`$vn in @('cid','CID')){
+          if(`$props.PSObject.Properties.Match(`$vn).Count -gt 0){
+            `$cid="`$(`$props.`$vn)"
+            if(`$cid -and -not `$found.ContainsKey(`$cid)){
+              `$puid=`$null; try{`$puid=([Convert]::ToUInt64(`$cid,16)).ToString()}catch{}
+              `$found[`$cid]=[pscustomobject]@{Account=(Split-Path `$k.Name -Leaf);Cid=`$cid;Puid=`$puid;KeyPath="`$(`$k.Name)"}
+            }
+          }
+        }
+      }
     }
   }
 }
-`$out | ConvertTo-Json -Depth 3 | Out-File -FilePath '$tmp' -Encoding ASCII
+@(`$found.Values) | ConvertTo-Json -Depth 4 | Out-File -FilePath '$tmp' -Encoding ASCII
 "@
     try {
         Set-Content -LiteralPath $ps1 -Value $payload -Encoding ASCII
@@ -399,6 +452,23 @@ function Get-Identifiers {
     [void]$ids.Add( (New-Id 'Activation' 'Installed product key (decoded)' $decoded -Sensitive -Source 'CurrentVersion\DigitalProductId' `
         -Explain 'Full key recovered from the DigitalProductId blob (classic base-24 decode). Retail/OEM installs decode to a real key; volume (MAK/KMS) installs do not store a recoverable key.') )
 
+    # Consolidated "full product key": pick the best available source, or say why none exists.
+    $keyPattern = '^[A-Z0-9]{5}(-[A-Z0-9]{5}){4}$'
+    $fullKey = $null; $fullSrc = $null
+    if ($oemKey  -and "$oemKey"  -match $keyPattern) { $fullKey = "$oemKey";  $fullSrc = 'OEM firmware (OA3xOriginalProductKey)' }
+    elseif ($decoded -and "$decoded" -match $keyPattern) { $fullKey = "$decoded"; $fullSrc = 'DigitalProductId decode' }
+    if ($fullKey) {
+        [void]$ids.Add( (New-Id 'Activation' 'Full product key' $fullKey -Sensitive -Source $fullSrc `
+            -Explain ('The full 25-character product key for this install, recovered from ' + $fullSrc + '. Masked unless -Reveal.')) )
+    } else {
+        $reason =
+            if ("$chan" -match 'Volume|MAK|KMS') { '(not recoverable - Volume/MAK/KMS: only the last 5 chars are stored on the device)' }
+            elseif (-not $Script:IsAdmin)        { '(not recoverable unelevated - run as admin with -Reveal; may exist in OEM firmware)' }
+            else                                 { '(not recoverable on this install)' }
+        [void]$ids.Add( (New-Id 'Activation' 'Full product key' $reason -Source 'best-effort' `
+            -Explain 'The complete 25-character key. It is only recoverable for retail/OEM installs (via OEM firmware OA3 key or DigitalProductId decode). Volume MAK/KMS keys are NOT stored on the device by design - Windows keeps only the last 5 characters - so no tool can display them.') )
+    }
+
     # ---- Advertising / user ----
     [void]$ids.Add( (New-Id 'User' 'User name' ('{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME) -Source 'env' `
         -Explain 'Domain (or machine) and username of the current account.') )
@@ -540,12 +610,22 @@ function Get-Identifiers {
                 [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub hash (Windows)' $ek.WinHash -Sensitive -Source 'Get-TpmEndorsementKeyInfo.PublicKeyHash' -Explain $ekExplain) )
             }
             if ($ek.Sha256) {
-                [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub SHA-256' $ek.Sha256 -Sensitive -Source 'SHA-256 of PublicKey.RawData' `
-                    -Explain ($ekExplain + ' (SHA-256 fingerprint of the EKpub, computed here since Windows left PublicKeyHash empty.)')) )
+                [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub SHA-256 (SPKI)' $ek.Sha256 -Sensitive -Source 'SHA-256 of PublicKey.RawData (DER SPKI)' `
+                    -Explain ($ekExplain + ' (SHA-256 over the DER SubjectPublicKeyInfo; computed here since Windows left PublicKeyHash empty.)')) )
+            }
+            if ($ek.Sha1) {
+                [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub SHA-1 (SPKI)' $ek.Sha1 -Sensitive -Source 'SHA-1 of PublicKey.RawData (DER SPKI)' `
+                    -Explain 'SHA-1 fingerprint of the EKpub DER SubjectPublicKeyInfo. Some tools/attestation flows key off SHA-1 rather than SHA-256.') )
+            }
+            if ($ek.ModSha256) {
+                [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub modulus SHA-256' $ek.ModSha256 -Sensitive -Source 'SHA-256 of raw RSA modulus' `
+                    -Explain 'SHA-256 over the RAW RSA modulus (public key value only, DER wrapper stripped) - the "raw-modulus" fingerprint some Microsoft/attestation formats use, as opposed to hashing the whole SubjectPublicKeyInfo.') )
             }
             if ($ek.DerB64) {
                 [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub (DER, b64)' $ek.DerB64 -Sensitive -Source 'Get-TpmEndorsementKeyInfo.PublicKey.RawData' `
-                    -Explain 'The actual EKpub public key: the DER-encoded SubjectPublicKeyInfo, base64. This IS the endorsement public key (not just a hash). Use -Reveal to record it.') )
+                    -Explain 'The actual EKpub public key: the DER-encoded SubjectPublicKeyInfo, base64. This IS the endorsement public key (not just a hash) - from it you can derive any required format. Use -Reveal to record it.') )
+                [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub Name (TPM2B_NAME)' '(not derivable from this cmdlet)' -Source 'n/a' `
+                    -Explain 'The TPM "Name" (TPM2B_NAME = alg id + hash of the TPMT_PUBLIC area) is NOT computable from the DER SubjectPublicKeyInfo this cmdlet returns - it needs the raw TPMT_PUBLIC blob (via tpm2-tools or the NCrypt/PCPKSP provider). Shown for completeness; the values above are what is available here.') )
             }
         } elseif ($ek.Present) {
             [void]$ids.Add( (New-Id 'Hardware' 'TPM EKpub' '(EK present but public key not readable)' -Source 'Get-TpmEndorsementKeyInfo' -Explain $ekExplain) )
