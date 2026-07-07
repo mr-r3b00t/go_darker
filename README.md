@@ -671,16 +671,30 @@ fingerprint or correlate the device. It changes nothing; it only reports.
 ## Quick start
 
 ```powershell
-# Masked report (safe to screenshot/share)
+# Masked report with inline explanations (default; safe to screenshot/share)
 .\View-WindowsIdentifiers.ps1
+
+# Compact list, no explanations
+.\View-WindowsIdentifiers.ps1 -Brief
 
 # Full values - e.g. to back up your own product key (CONFIDENTIAL output)
 .\View-WindowsIdentifiers.ps1 -Reveal
+
+# Also extract the DEVICE account PUID (needs admin; runs a one-shot SYSTEM task)
+.\View-WindowsIdentifiers.ps1 -ExtractDeviceId -Reveal
 
 # Export (respects masking unless -Reveal is also passed)
 .\View-WindowsIdentifiers.ps1 -Csv .\ids.csv
 .\View-WindowsIdentifiers.ps1 -Reveal -Json .\ids.json
 ```
+
+## Inline explanations
+
+Every identifier is **explained inline by default** - what it is, how unique
+and stable it is, and why it matters for privacy (e.g. that `MachineGuid` is a
+per-install cross-service correlator, or that hardware serials survive an OS
+reinstall). Pass **`-Brief`** for a compact list without the explanations. The
+CSV/JSON export includes an `Explanation` column regardless.
 
 ## Masking
 
@@ -695,27 +709,82 @@ IDs keep their first few characters.
 
 | Category | Identifiers |
 |---|---|
-| **Machine** | Computer name, `MachineGuid` (Cryptography), **Product ID ("PUID")**, Build GUID, install date, SMBIOS UUID, system IdentifyingNumber |
-| **Activation** | Windows edition, license status/channel/description, **partial product key**, **OEM firmware key (OA3)**, **decoded installed product key** (from `DigitalProductId`) |
+| **Machine** | Computer name, `MachineGuid` (Cryptography), **Windows Product ID**, Build GUID, install date, SMBIOS UUID, system IdentifyingNumber |
+| **Activation** | Windows edition, license status/channel/description, **partial product key**, **OEM firmware key (OA3)**, **decoded installed product key** (from `DigitalProductId`), and a consolidated **Full product key** (best available source, or the reason none exists) |
 | **Telemetry** | SQM Machine ID, SQM User ID, DiagTrack Client ID |
-| **User** | User name, **user SID**, Advertising ID + enabled flag |
-| **Hardware** | BIOS serial, baseboard serial, CPU ProcessorId, per-disk serials, TPM presence/manufacturer |
+| **User** | User name, **user SID**, Advertising ID + enabled flag, **Microsoft account PUID / CID** (the "Passport Unique Identifier"; read from the signed-in account, if any) |
+| **Device** | **Entra/Azure AD Device ID** and join state (`dsregcmd /status`), Entra tenant ID, the **wlidsvc device-registration** note, and (with `-ExtractDeviceId`) the **device account PUID/CID** read from the SYSTEM hive |
+| **Hardware** | BIOS serial, baseboard serial, CPU ProcessorId, per-disk serials, TPM presence/manufacturer, and the **TPM EKpub** (Endorsement Key public part + hash) |
 | **Network** | Per-adapter MAC addresses (physical adapters) |
 
 Notes:
 
-- **Read-only.** No registry, service or setting is modified.
-- **Admin-gated values:** the OEM firmware key (`OA3xOriginalProductKey`) and
-  TPM data need Administrator; without it they show `(needs admin)`.
-- **Volume/MAK licenses** do not store a recoverable key in `DigitalProductId`,
-  so the decoded key honestly reports `(unavailable - volume/MAK license)`
-  rather than a bogus value. Retail/OEM installs decode to a real key.
+- **Product ID vs PUID.** The Windows **Product ID** is a licensing/install
+  identifier derived from the product key - it is **not** the PUID. The
+  **PUID (Passport Unique Identifier)** is a permanent Microsoft *account*
+  identifier from the legacy Microsoft Passport system (later Windows Live ID,
+  now Microsoft account). Its **native form is hexadecimal** - the .NET
+  Passport API exposed it as
+  [`PassportIdentity.HexPUID`](https://learn.microsoft.com/en-us/dotnet/api/system.web.security.passportidentity.hexpuid?view=netframework-4.8.1)
+  (a hex string). On modern Windows that hex value is the signed-in account's
+  **CID** (16 hex digits, also seen in OneDrive URLs); the tool reports the hex
+  form and a **derived decimal** (~18 digits) under **User**, or
+  `(no Microsoft account signed in)` on a local account.
+- **Device identity vs account identity.** Separately from your *account*
+  PUID, Windows registers the **device** with Microsoft. On first internet
+  connection the `wlidsvc` (Windows Live ID) service logs the device in using
+  its **hardware identity** (disk serial, SMBIOS UUID, TPM) and receives a
+  device PUID/GDID and device token. This is also why the hardware serials the
+  registration is built from are enumerated under **Hardware**.
+- **Extracting the device PUID (`-ExtractDeviceId`, admin).** The device MSA
+  identity is registered under the **SYSTEM account** (`S-1-5-18`), so it is
+  not visible in a normal admin's `HKCU`. With `-ExtractDeviceId` the tool
+  runs a **one-shot scheduled task as SYSTEM** that searches SYSTEM's
+  `IdentityCRL` (recursively) and the `IdentityStore\Cache\S-1-5-18` for any
+  `cid` value, returns the device **CID (hex) / PUID (decimal)** via a temp
+  file, then removes the task. It reads only the identity store (no changes)
+  and does **not** extract the device *token* (that DPAPI-protected credential
+  is deliberately left alone). Without this switch, the readable device ID
+  shown is the **Entra/Azure AD Device ID** (via `dsregcmd /status`) plus join
+  state.
+- **Read-only.** No registry, service or setting is modified (`dsregcmd
+  /status` is read-only; no external network calls are made).
+- **Admin-gated values:** the OEM firmware key (`OA3xOriginalProductKey`),
+  TPM WMI data, and the **TPM EKpub** (`Get-TpmEndorsementKeyInfo`) need
+  Administrator; without it they show `(needs admin)`. Run elevated to capture
+  them.
+- **TPM EKpub = strongest fingerprint.** The Endorsement Key is burned into
+  the TPM at manufacture and cannot be changed, reset or removed, so its public
+  part uniquely identifies this exact device for its whole life. It is the same
+  key Microsoft's device attestation/registration uses to pin the device.
+  Windows returns the EKpub as `AsnEncodedData` (DER `SubjectPublicKeyInfo`)
+  and usually leaves `PublicKeyHash` empty, so the tool derives everything from
+  the DER bytes and reports several forms (all masked unless `-Reveal`):
+  - **`TPM EKpub (DER, b64)`** - the actual public key; from this you can
+    compute any other format with `openssl`/`tpm2-tools`.
+  - **`TPM EKpub SHA-256 (SPKI)`** and **`SHA-1 (SPKI)`** - fingerprints over
+    the whole DER SubjectPublicKeyInfo.
+  - **`TPM EKpub modulus SHA-256`** - the "raw-modulus" hash (RSA modulus only,
+    DER wrapper stripped) that some attestation formats use; absent for ECC EKs.
+  - **`TPM EKpub hash (Windows)`** - only if a build actually populates
+    `PublicKeyHash`.
+  - **`TPM EKpub Name (TPM2B_NAME)`** is shown as *not derivable* here: the TPM
+    Name hashes the raw `TPMT_PUBLIC` blob, which this cmdlet does not expose
+    (use `tpm2-tools`/NCrypt if you need it).
+- **Full product key.** The consolidated `Full product key` row shows the
+  complete 25-character key from the best available source - **OEM firmware
+  (OA3)** first, else the **DigitalProductId decode** - masked unless
+  `-Reveal`, and only when run **elevated**. It is only recoverable on
+  **retail/OEM** installs. **Volume MAK/KMS keys are not stored on the device
+  by design** (Windows keeps only the last 5 characters), so on those installs
+  the row honestly reports `(not recoverable - Volume/MAK/KMS ...)` instead of
+  a bogus value - no tool can display a full MAK/KMS key.
 - Every row lists its **Source** (registry path or WMI class) in the CSV/JSON
   so you can verify exactly where each value came from.
 
 ## CSV / JSON output columns
 
-`Category, Name, Value, Sensitive, Source`
+`Category, Name, Value, Sensitive, Source, Explanation`
 
 ---
 
